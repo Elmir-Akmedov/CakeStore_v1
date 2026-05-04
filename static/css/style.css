@@ -1,0 +1,1509 @@
+/* ═══════════════════════════════════════════════════════════
+   CAKE STORE MANAGER  —  Stylesheet
+   ═══════════════════════════════════════════════════════════ */
+
+/* ── Variables ─────────────────────────────────────────────── */
+:root {
+  --bg:        #0f0e17;
+  --surface:   #1a1a2e;
+  --surface2:  #16213e;
+  --border:    #2a2a4a;
+  --accent:    #e94560;
+  --accent2:   #f5a623;
+  --green:     #2ecc71;
+  --blue:      #3498db;
+  --purple:    #9b59b6;
+  --text:      #eaeaea;
+  --muted:     #8888aa;
+  --radius:    10px;
+  --shadow:    0 4px 20px rgba(0,0,0,0.4);
+  --font:      'Segoe UI', system-ui, sans-serif;
+}
+
+/* ── Reset ──────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ── Scrollbar ──────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--surface); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* ═══════════════════════════════════════════════════════════
+   SCREENS
+   ═══════════════════════════════════════════════════════════ */
+
+.screen { display: none; width: 100%; min-height: 100vh; }
+.screen.active { display: flex; }
+
+/* ── Start Screen ───────────────────────────────────────────── */
+#screen-start {
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(ellipse at center, #1a1a3e 0%, var(--bg) 70%);
+  text-align: center;
+  gap: 2rem;
+  padding: 2rem;
+}
+
+.start-logo { font-size: 5rem; animation: bounce 2s infinite; }
+
+@keyframes bounce {
+  0%, 100% { transform: translateY(0); }
+  50%       { transform: translateY(-12px); }
+}
+
+.start-title {
+  font-size: 3rem;
+  font-weight: 800;
+  background: linear-gradient(135deg, var(--accent2), var(--accent));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.start-subtitle { color: var(--muted); font-size: 1.1rem; }
+
+.start-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  width: 100%;
+  max-width: 340px;
+}
+
+/* ── Main Game Screen ───────────────────────────────────────── */
+#screen-game {
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ── Report Screen ──────────────────────────────────────────── */
+#screen-report {
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 2rem;
+  gap: 1.5rem;
+  overflow-y: auto;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   TOP BAR
+   ═══════════════════════════════════════════════════════════ */
+
+#topbar {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 0.6rem 1.2rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.topbar-brand {
+  font-weight: 800;
+  font-size: 1.1rem;
+  color: var(--accent2);
+  white-space: nowrap;
+}
+
+.topbar-stats {
+  display: flex;
+  gap: 1.2rem;
+  flex-wrap: wrap;
+  flex: 1;
+}
+
+.stat-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 0.25rem 0.75rem;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.stat-chip .label { color: var(--muted); }
+.stat-chip .value { font-weight: 700; }
+.stat-chip.money  .value { color: var(--accent2); }
+.stat-chip.rep    .value { color: var(--green); }
+
+.topbar-actions { display: flex; gap: 0.5rem; flex-shrink: 0; }
+
+/* ═══════════════════════════════════════════════════════════
+   MAIN LAYOUT (3 columns)
+   ═══════════════════════════════════════════════════════════ */
+
+#game-layout {
+  display: grid;
+  grid-template-columns: 260px 1fr 280px;
+  gap: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-right: 1px solid var(--border);
+}
+.panel:last-child { border-right: none; }
+
+.panel-header {
+  padding: 0.75rem 1rem;
+  background: var(--surface2);
+  border-bottom: 1px solid var(--border);
+  font-weight: 700;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.panel-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+/* ── Tab bar inside panels ──────────────────────────────────── */
+.tab-bar {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface2);
+  flex-shrink: 0;
+}
+
+.tab-btn {
+  flex: 1;
+  padding: 0.55rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.15s;
+}
+
+.tab-btn:hover        { color: var(--text); }
+.tab-btn.active       { color: var(--accent2); border-bottom-color: var(--accent2); }
+
+.tab-content          { display: none; flex: 1; overflow-y: auto; padding: 0.75rem; flex-direction: column; gap: 0.6rem; }
+.tab-content.active   { display: flex; }
+
+/* ═══════════════════════════════════════════════════════════
+   CARDS
+   ═══════════════════════════════════════════════════════════ */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem;
+}
+
+.card-title {
+  font-weight: 700;
+  font-size: 0.9rem;
+  margin-bottom: 0.4rem;
+}
+
+/* ── Oven Card ──────────────────────────────────────────────── */
+.oven-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.8rem;
+}
+
+.oven-card.busy { border-color: var(--accent2); }
+.oven-card.free { border-color: var(--border); }
+
+.oven-title {
+  font-weight: 700;
+  font-size: 0.9rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.5rem;
+}
+
+.oven-badge {
+  font-size: 0.7rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.oven-badge.basic      { background: #333; color: #aaa; }
+.oven-badge.pro        { background: #1a3a5c; color: var(--blue); }
+.oven-badge.industrial { background: #3a1a2e; color: var(--purple); }
+
+.oven-status { font-size: 0.8rem; color: var(--muted); margin-bottom: 0.5rem; }
+
+.progress-bar {
+  height: 8px;
+  background: var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 0.4rem 0;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--accent2), var(--accent));
+  transition: width 0.5s ease;
+}
+
+.progress-fill.done { background: var(--green); }
+
+.oven-actions {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+  flex-wrap: wrap;
+}
+
+/* ── Recipe Card ────────────────────────────────────────────── */
+.recipe-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem;
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.1s;
+}
+.recipe-card:hover { border-color: var(--accent2); transform: translateY(-1px); }
+
+.recipe-emoji { font-size: 1.6rem; }
+.recipe-name  { font-weight: 700; font-size: 0.9rem; margin: 0.2rem 0; }
+.recipe-type  {
+  font-size: 0.7rem; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.05em;
+  margin-bottom: 0.4rem;
+}
+
+.price-row { display: flex; gap: 0.4rem; }
+.price-tag {
+  flex: 1;
+  text-align: center;
+  background: var(--surface2);
+  border-radius: 6px;
+  padding: 0.25rem 0;
+  font-size: 0.75rem;
+}
+.price-tag .sz { color: var(--muted); font-size: 0.65rem; display: block; }
+.price-tag .pr { font-weight: 700; color: var(--accent2); }
+
+/* ── Inventory Cake ─────────────────────────────────────────── */
+.inv-cake {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.65rem 0.8rem;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+}
+.inv-cake.fresh { border-color: var(--green); }
+.inv-cake.stale { border-color: #555; opacity: 0.7; }
+
+.inv-emoji { font-size: 1.4rem; flex-shrink: 0; }
+
+.inv-info { flex: 1; min-width: 0; }
+.inv-name { font-weight: 700; font-size: 0.85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.inv-meta { font-size: 0.75rem; color: var(--muted); }
+
+.slice-bar {
+  display: flex;
+  gap: 2px;
+  margin-top: 4px;
+}
+.slice-dot {
+  width: 8px; height: 8px;
+  border-radius: 2px;
+  background: var(--border);
+}
+.slice-dot.used { background: var(--accent2); }
+
+/* ── Order Card ─────────────────────────────────────────────── */
+.order-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem;
+  position: relative;
+  overflow: hidden;
+  transition: border-color 0.2s;
+}
+
+.order-card.urgent   { border-color: var(--accent2); animation: pulse-amber 1s infinite; }
+.order-card.critical { border-color: var(--accent);  animation: pulse-red   0.6s infinite; }
+
+@keyframes pulse-amber {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(245,166,35,0); }
+  50%       { box-shadow: 0 0 0 4px rgba(245,166,35,0.3); }
+}
+@keyframes pulse-red {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(233,69,96,0); }
+  50%       { box-shadow: 0 0 0 4px rgba(233,69,96,0.4); }
+}
+
+.order-timer {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  background: var(--green);
+  transform-origin: left;
+  transition: width 1s linear, background 0.3s;
+}
+
+.order-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-top: 0.3rem;
+}
+
+.order-emoji { font-size: 1.4rem; flex-shrink: 0; }
+
+.order-info { flex: 1; min-width: 0; }
+.order-customer { font-weight: 700; font-size: 0.85rem; }
+.order-detail   { font-size: 0.78rem; color: var(--muted); }
+.order-fresh    { font-size: 0.7rem; color: var(--green); font-weight: 600; }
+
+.order-revenue {
+  font-weight: 800;
+  font-size: 0.9rem;
+  color: var(--accent2);
+  white-space: nowrap;
+}
+
+/* ── Worker Card ────────────────────────────────────────────── */
+.worker-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.65rem 0.8rem;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.worker-avatar {
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.1rem;
+  flex-shrink: 0;
+}
+.worker-avatar.baker   { background: #3a2a1a; }
+.worker-avatar.cashier { background: #1a2a3a; }
+
+.worker-info { flex: 1; min-width: 0; }
+.worker-name { font-weight: 700; font-size: 0.85rem; }
+.worker-meta { font-size: 0.75rem; color: var(--muted); }
+.worker-skill { display: flex; gap: 2px; margin-top: 2px; }
+.skill-star { font-size: 0.7rem; }
+
+.worker-actions { display: flex; flex-direction: column; gap: 0.3rem; }
+
+/* ── Shop Card ──────────────────────────────────────────────── */
+.shop-item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.8rem;
+}
+.shop-item-name { font-weight: 700; font-size: 0.9rem; }
+.shop-item-desc { font-size: 0.78rem; color: var(--muted); margin: 0.2rem 0 0.6rem; }
+.shop-item-cost { font-weight: 700; color: var(--accent2); font-size: 0.9rem; }
+
+/* ── Report Card ────────────────────────────────────────────── */
+.report-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  width: 100%;
+  max-width: 640px;
+}
+
+.report-title {
+  font-size: 1.5rem;
+  font-weight: 800;
+  text-align: center;
+  margin-bottom: 1.5rem;
+}
+
+.report-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.report-stat {
+  background: var(--surface2);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  text-align: center;
+}
+.report-stat .rs-label { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; }
+.report-stat .rs-value { font-size: 1.5rem; font-weight: 800; }
+.report-stat.positive .rs-value { color: var(--green); }
+.report-stat.negative .rs-value { color: var(--accent); }
+.report-stat.neutral  .rs-value { color: var(--accent2); }
+
+.report-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.9rem;
+}
+.report-row:last-child { border-bottom: none; }
+.report-row.total      { font-weight: 800; font-size: 1rem; }
+.report-row .positive  { color: var(--green); }
+.report-row .negative  { color: var(--accent); }
+
+/* ═══════════════════════════════════════════════════════════
+   BUTTONS
+   ═══════════════════════════════════════════════════════════ */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  border: none;
+  font-weight: 700;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+  font-family: var(--font);
+}
+
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn:not(:disabled):hover { transform: translateY(-1px); filter: brightness(1.1); }
+.btn:not(:disabled):active { transform: translateY(0); }
+
+.btn-primary  { background: var(--accent);  color: #fff; }
+.btn-secondary{ background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+.btn-success  { background: var(--green);   color: #fff; }
+.btn-warning  { background: var(--accent2); color: #000; }
+.btn-danger   { background: #7b2133;        color: #fff; }
+.btn-info     { background: var(--blue);    color: #fff; }
+.btn-sm       { padding: 0.3rem 0.65rem; font-size: 0.78rem; border-radius: 6px; }
+.btn-lg       { padding: 0.75rem 1.75rem; font-size: 1rem; border-radius: 10px; }
+.btn-full     { width: 100%; }
+
+/* ═══════════════════════════════════════════════════════════
+   FORM ELEMENTS
+   ═══════════════════════════════════════════════════════════ */
+
+.form-group { display: flex; flex-direction: column; gap: 0.4rem; }
+.form-label { font-size: 0.8rem; color: var(--muted); font-weight: 600; text-transform: uppercase; }
+
+input[type="text"], select {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 0.6rem 0.9rem;
+  font-size: 0.9rem;
+  font-family: var(--font);
+  width: 100%;
+  transition: border-color 0.15s;
+}
+input[type="text"]:focus, select:focus {
+  outline: none;
+  border-color: var(--accent2);
+}
+select option { background: var(--surface2); }
+
+/* ═══════════════════════════════════════════════════════════
+   MODAL
+   ═══════════════════════════════════════════════════════════ */
+
+.modal-backdrop {
+  display: none;
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.7);
+  z-index: 100;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+.modal-backdrop.open { display: flex; }
+
+.modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 1.5rem;
+  width: 100%;
+  max-width: 420px;
+  box-shadow: var(--shadow);
+  animation: slideUp 0.2s ease;
+}
+
+@keyframes slideUp {
+  from { transform: translateY(20px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+.modal-title {
+  font-size: 1.1rem;
+  font-weight: 800;
+  margin-bottom: 1rem;
+}
+
+.modal-body { display: flex; flex-direction: column; gap: 0.75rem; }
+
+.modal-footer {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 1rem;
+  justify-content: flex-end;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   TOAST NOTIFICATIONS
+   ═══════════════════════════════════════════════════════════ */
+
+#toast-container {
+  position: fixed;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  z-index: 200;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 0.5rem;
+  pointer-events: none;
+}
+
+.toast {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.7rem 1.1rem;
+  font-size: 0.88rem;
+  font-weight: 600;
+  box-shadow: var(--shadow);
+  animation: toastIn 0.25s ease;
+  pointer-events: auto;
+  max-width: 300px;
+}
+
+.toast.success { border-color: var(--green);  color: var(--green); }
+.toast.error   { border-color: var(--accent); color: var(--accent); }
+.toast.info    { border-color: var(--blue);   color: var(--blue); }
+.toast.warn    { border-color: var(--accent2);color: var(--accent2); }
+
+@keyframes toastIn {
+  from { opacity: 0; transform: translateX(20px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   REPUTATION BAR
+   ═══════════════════════════════════════════════════════════ */
+
+.rep-bar {
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+  flex: 1;
+  min-width: 60px;
+}
+
+.rep-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--accent), var(--accent2), var(--green));
+  transition: width 0.5s ease;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   EMPTY STATES
+   ═══════════════════════════════════════════════════════════ */
+
+.empty-state {
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.85rem;
+  padding: 1.5rem 0.5rem;
+}
+.empty-icon { font-size: 2rem; margin-bottom: 0.5rem; }
+
+/* ═══════════════════════════════════════════════════════════
+   STORE STATUS BANNER
+   ═══════════════════════════════════════════════════════════ */
+
+.status-banner {
+  text-align: center;
+  padding: 0.4rem 1rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+.status-banner.open   { background: rgba(46,204,113,0.15); color: var(--green); border-bottom: 1px solid rgba(46,204,113,0.3); }
+.status-banner.closed { background: rgba(233,69,96,0.10);  color: var(--accent); border-bottom: 1px solid rgba(233,69,96,0.2); }
+
+/* ═══════════════════════════════════════════════════════════
+   DAY HISTORY TABLE (reports panel)
+   ═══════════════════════════════════════════════════════════ */
+
+.history-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+.history-table th {
+  text-align: left;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+.history-table td {
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.history-table tr:hover td { background: rgba(255,255,255,0.03); }
+
+/* ═══════════════════════════════════════════════════════════
+   BAKING QUEUE LIST
+   ═══════════════════════════════════════════════════════════ */
+
+.baking-item {
+  background: var(--surface);
+  border: 1px solid var(--accent2);
+  border-radius: var(--radius);
+  padding: 0.6rem 0.8rem;
+}
+.baking-top {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+.baking-name { font-weight: 700; font-size: 0.85rem; flex: 1; }
+.baking-time { font-size: 0.78rem; color: var(--accent2); }
+
+/* ═══════════════════════════════════════════════════════════
+   ASSIGN DROPDOWN
+   ═══════════════════════════════════════════════════════════ */
+
+.assign-select {
+  font-size: 0.75rem;
+  padding: 0.25rem 0.5rem;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   RESPONSIVE
+   ═══════════════════════════════════════════════════════════ */
+
+@media (max-width: 900px) {
+  #game-layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto;
+    overflow-y: auto;
+  }
+  .panel { border-right: none; border-bottom: 1px solid var(--border); max-height: 50vh; }
+  #screen-game { overflow-y: auto; }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   WORKER CARDS — New Design
+   ═══════════════════════════════════════════════════════════ */
+
+.worker-card-new {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.8rem;
+}
+
+/* ── Avatar circle — generated from initials, no image needed ──
+   HOW IT WORKS: We make a circle div, put the initials in it,
+   and use a small icon positioned at the bottom-right corner.
+   Each worker gets a unique color based on their database ID.   */
+.worker-avatar-circle {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  position: relative;
+  font-weight: 800;
+  font-size: 1rem;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+
+.avatar-initials {
+  font-size: 0.9rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+/* The small role icon sits at bottom-right of the circle */
+.avatar-role-icon {
+  position: absolute;
+  bottom: -4px;
+  right: -4px;
+  font-size: 0.85rem;
+  background: var(--surface);
+  border-radius: 50%;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+}
+
+.worker-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.worker-name-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.worker-name {
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+
+.worker-role-badge {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0.1rem 0.4rem;
+  border-radius: 10px;
+}
+.worker-role-badge.baker   { background: rgba(245,166,35,0.2); color: var(--accent2); }
+.worker-role-badge.cashier { background: rgba(52,152,219,0.2); color: var(--blue); }
+
+/* ── Skill tags ──────────────────────────────────────────────
+   HOW SKILLS WORK:
+   - bake_speed (1–5):    stored in DB, shown as "⚡ Speed 3"
+   - service_speed (1–5): shown as "🤝 Service 2"
+   - special_skill:       one of: fresh_expert, multitasker,
+                          speed_demon, or none
+   To level up a skill you'll add an "upgrade" API endpoint
+   later that costs money and increments the field.           */
+.skill-tags {
+  display: flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+  margin: 0.2rem 0;
+}
+
+.skill-tag {
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 0.1rem 0.4rem;
+  border-radius: 8px;
+}
+.skill-tag.base    { background: rgba(255,255,255,0.07); color: var(--muted); }
+.skill-tag.special { background: rgba(155,89,182,0.25); color: #c39bd3; border: 1px solid rgba(155,89,182,0.4); }
+
+/* ── Worker controls (mode dropdown + optional selects) ───── */
+.worker-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-top: 0.2rem;
+}
+
+.mode-select {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 0.3rem 0.5rem;
+  font-size: 0.78rem;
+  font-family: var(--font);
+  width: 100%;
+  cursor: pointer;
+}
+.mode-select:focus { outline: none; border-color: var(--accent2); }
+
+/* ═══════════════════════════════════════════════════════════
+   HIRE SECTION  (at the bottom of the Staff tab)
+   ═══════════════════════════════════════════════════════════ */
+.hire-section {
+  margin-top: 0.75rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.75rem;
+}
+
+.hire-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin-bottom: 0.6rem;
+}
+
+.hire-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.6rem;
+}
+
+.hire-card {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  text-align: center;
+}
+
+.hire-icon { font-size: 1.8rem; }
+.hire-name { font-weight: 700; font-size: 0.85rem; }
+.hire-desc { font-size: 0.72rem; color: var(--muted); line-height: 1.4; }
+.hire-cost { font-size: 0.75rem; color: var(--accent2); font-weight: 600; margin-bottom: 0.3rem; }
+
+/* ═══════════════════════════════════════════════════════════
+   PHASE 0 ADDITIONS
+═══════════════════════════════════════════════════════════ */
+
+/* ── Order type tags ─────────────────────────────────────── */
+.order-type-tag {
+  display: inline-block;
+  font-size: 0.65rem;
+  font-weight: 800;
+  padding: 0.1rem 0.4rem;
+  border-radius: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+}
+.order-type-tag.urgent { background: rgba(233,69,96,0.2); color: var(--accent); }
+.order-type-tag.bulk   { background: rgba(52,152,219,0.2); color: var(--blue); }
+
+/* ── Smooth progress bars (no jumpy polling feel) ────────── */
+.progress-fill {
+  transition: width 0.5s linear;
+}
+
+/* ── Hire pool modal cards ───────────────────────────────── */
+.hire-pool-card {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem;
+  transition: border-color 0.15s;
+}
+.hire-pool-card:hover { border-color: var(--accent2); }
+
+.hire-pool-avatar {
+  font-size: 2rem;
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface);
+  border-radius: 50%;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+}
+
+.hire-pool-info { flex: 1; min-width: 0; }
+.hire-pool-name { font-weight: 700; font-size: 0.9rem; }
+
+/* ── Hire button section in staff panel ──────────────────── */
+.hire-btn-section {
+  padding: 0.6rem 0 0.2rem;
+  flex-shrink: 0;
+}
+
+/* ── Optimistic fulfill fade ─────────────────────────────── */
+.order-card {
+  transition: opacity 0.2s ease;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   PHASE 1 ADDITIONS
+═══════════════════════════════════════════════════════════ */
+
+/* ── Event Banner ────────────────────────────────────────── */
+.event-banner {
+  display: none;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+}
+.event-banner.positive { background: rgba(46,204,113,0.12); color: var(--green); }
+.event-banner.negative { background: rgba(233,69,96,0.12);  color: var(--accent); }
+.event-banner.challenge { background: rgba(52,152,219,0.12); color: var(--blue); }
+.event-banner.info      { background: rgba(245,166,35,0.12); color: var(--accent2); }
+.event-icon  { font-size: 1.4rem; flex-shrink: 0; }
+.event-text  { flex: 1; display: flex; flex-direction: column; gap: 0.1rem; }
+.event-text strong { font-size: 0.85rem; }
+.event-counter {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.8rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+/* ── Customer type icon ──────────────────────────────────── */
+.ctype-icon { font-size: 0.9rem; margin-right: 0.2rem; }
+
+/* ── XP Bar on worker cards ──────────────────────────────── */
+.xp-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.3rem 0;
+}
+.xp-label { font-size: 0.68rem; color: var(--muted); white-space: nowrap; }
+.xp-bar-wrap {
+  flex: 1;
+  height: 5px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.xp-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, #3498db, #9b59b6);
+  transition: width 0.4s ease;
+}
+
+/* ── Kitchen Upgrades ────────────────────────────────────── */
+.shop-item.owned {
+  opacity: 0.6;
+  border-color: var(--green);
+}
+.shop-item.owned .shop-item-cost { color: var(--green); }
+
+/* ── Notification Center ─────────────────────────────────── */
+.notif-btn {
+  position: relative;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 1rem;
+  flex-shrink: 0;
+}
+.notif-badge {
+  display: none;
+  position: absolute;
+  top: -5px; right: -5px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.6rem;
+  font-weight: 800;
+  border-radius: 10px;
+  padding: 0.05rem 0.3rem;
+  min-width: 16px;
+  align-items: center;
+  justify-content: center;
+}
+#notif-panel {
+  display: none;
+  position: fixed;
+  top: 48px; right: 0;
+  width: 320px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0 0 0 12px;
+  box-shadow: var(--shadow);
+  z-index: 150;
+  max-height: 70vh;
+  overflow: hidden;
+  flex-direction: column;
+}
+#notif-panel.open { display: flex; }
+.notif-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface2);
+  font-size: 0.85rem;
+}
+.notif-list { overflow-y: auto; flex: 1; }
+.notif-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  font-size: 0.78rem;
+}
+.notif-item.success { border-left: 2px solid var(--green); }
+.notif-item.error   { border-left: 2px solid var(--accent); }
+.notif-item.warning { border-left: 2px solid var(--accent2); }
+.notif-item.info    { border-left: 2px solid var(--blue); }
+.notif-icon  { flex-shrink: 0; font-size: 0.95rem; margin-top: 0.1rem; }
+.notif-msg   { flex: 1; color: var(--text); line-height: 1.4; }
+.notif-day   { color: var(--muted); font-size: 0.7rem; white-space: nowrap; }
+
+/* ── Morning Briefing Screen ─────────────────────────────── */
+#screen-briefing {
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(ellipse at center, #1a1a3e 0%, var(--bg) 70%);
+  padding: 2rem;
+  gap: 1rem;
+}
+
+.briefing-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 1.5rem;
+  width: 100%;
+  max-width: 420px;
+  box-shadow: var(--shadow);
+}
+
+.briefing-title {
+  font-size: 1.4rem;
+  font-weight: 800;
+  text-align: center;
+  margin-bottom: 1.25rem;
+}
+
+.briefing-section {
+  margin-bottom: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+.briefing-section:last-child { border-bottom: none; margin-bottom: 0; }
+
+.briefing-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin-bottom: 0.4rem;
+}
+
+.briefing-row {
+  font-size: 0.88rem;
+  padding: 0.2rem 0;
+  color: var(--text);
+}
+
+.briefing-event {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  background: var(--surface2);
+  border-radius: 8px;
+  padding: 0.65rem;
+  margin-top: 0.4rem;
+}
+
+/* ── Recipes: locked state ───────────────────────────────── */
+.recipe-card.locked {
+  opacity: 0.5;
+  border-style: dashed;
+  cursor: default;
+}
+.recipe-card.locked:hover { transform: none; border-color: var(--border); }
+.recipe-lock-msg {
+  font-size: 0.72rem;
+  color: var(--accent2);
+  margin-top: 0.35rem;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+/* ── Tier badge in topbar ────────────────────────────────── */
+#tb-tier {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   PHASE 1 FIX — Smooth rendering, tooltips, new modals
+═══════════════════════════════════════════════════════════ */
+
+/* ── Progress bars always transition smoothly ────────────── */
+.progress-fill,
+.xp-bar-fill,
+.order-timer,
+.rep-fill {
+  transition: width 0.5s linear;
+}
+
+/* ── Cashier status line ──────────────────────────────────── */
+.worker-cashier-status {
+  font-size: 0.78rem;
+  color: var(--blue);
+  background: rgba(52,152,219,0.10);
+  border: 1px solid rgba(52,152,219,0.25);
+  border-radius: 6px;
+  padding: 0.3rem 0.55rem;
+  margin-top: 0.25rem;
+}
+
+/* ── Worker avatar clickable ─────────────────────────────── */
+.worker-avatar-circle {
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.worker-avatar-circle:hover {
+  transform: scale(1.08);
+  box-shadow: 0 0 0 3px var(--accent2);
+}
+
+/* ── Worker name clickable ───────────────────────────────── */
+.worker-name {
+  cursor: pointer;
+  text-decoration: underline dotted rgba(255,255,255,0.3);
+}
+.worker-name:hover { color: var(--accent2); }
+
+/* ═══════════════════════════════════════════════════════════
+   FIRE WORKER MODAL
+═══════════════════════════════════════════════════════════ */
+#fire-modal .modal {
+  max-width: 360px;
+  text-align: center;
+}
+.fire-modal-icon {
+  font-size: 2.5rem;
+  margin-bottom: 0.5rem;
+}
+.fire-modal-title {
+  font-size: 1.1rem;
+  font-weight: 800;
+  margin-bottom: 0.4rem;
+}
+.fire-modal-sub {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-bottom: 0.3rem;
+}
+.fire-modal-salary {
+  font-size: 0.82rem;
+  color: var(--green);
+  margin-bottom: 0.75rem;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   WORKER DETAIL MODAL
+═══════════════════════════════════════════════════════════ */
+#worker-detail-modal .modal {
+  max-width: 460px;
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+.detail-section {
+  margin-bottom: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+.detail-section:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+}
+
+.detail-label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin-bottom: 0.45rem;
+}
+
+.detail-row {
+  font-size: 0.85rem;
+  padding: 0.18rem 0;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   OVEN CARD — sub-regions for smart diff
+═══════════════════════════════════════════════════════════ */
+.oven-baker-line { margin: 0.25rem 0; }
+.oven-inner      { margin: 0.25rem 0; }
+
+/* ═══════════════════════════════════════════════════════════
+   BAKING ITEM — slide in animation
+═══════════════════════════════════════════════════════════ */
+.baking-item {
+  animation: slideInDown 0.25s ease;
+}
+@keyframes slideInDown {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   ORDER CARD — slide in animation for new orders
+═══════════════════════════════════════════════════════════ */
+.order-card {
+  animation: slideInRight 0.25s ease;
+  transition: opacity 0.2s ease;
+}
+@keyframes slideInRight {
+  from { opacity: 0; transform: translateX(16px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   INVENTORY ITEM — fade in
+═══════════════════════════════════════════════════════════ */
+.inv-cake {
+  animation: fadeIn 0.2s ease;
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   PHASE 2 — Recipe Shop, Skill Rarities, New Roles
+═══════════════════════════════════════════════════════════ */
+
+/* ── Recipe Shop Cards ───────────────────────────────────── */
+.recipe-shop-card {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem;
+  transition: border-color 0.2s, transform 0.15s;
+}
+.recipe-shop-card:hover { border-color: var(--accent2); transform: translateY(-1px); }
+
+.recipe-shop-card.locked { opacity: 0.75; }
+.recipe-shop-card.locked:hover { border-color: var(--border); transform: none; }
+
+.recipe-shop-card.unlocking {
+  animation: unlockFlash 0.6s ease;
+}
+@keyframes unlockFlash {
+  0%   { box-shadow: 0 0 0 0   rgba(46,204,113,0); border-color: var(--green); }
+  40%  { box-shadow: 0 0 0 8px rgba(46,204,113,0.4); }
+  100% { box-shadow: 0 0 0 0   rgba(46,204,113,0); border-color: var(--border); }
+}
+
+.rshop-emoji-wrap {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.rshop-emoji {
+  font-size: 2.2rem;
+  line-height: 1;
+  transition: filter 0.3s;
+}
+.rshop-emoji.blurred {
+  filter: blur(4px) brightness(0.5);
+  user-select: none;
+}
+
+/* Padlock overlay on locked recipes */
+.rshop-lock-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
+  gap: 2px;
+}
+
+.rshop-price-tag {
+  font-size: 0.65rem;
+  font-weight: 800;
+  color: var(--accent2);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.05rem 0.3rem;
+  white-space: nowrap;
+}
+
+.rshop-info { flex: 1; min-width: 0; }
+.rshop-name { font-weight: 700; font-size: 0.88rem; }
+.rshop-type { font-size: 0.7rem; color: var(--muted); text-transform: uppercase;
+              letter-spacing: 0.04em; margin-bottom: 0.2rem; }
+.rshop-lock-msg {
+  font-size: 0.75rem;
+  color: var(--accent2);
+  margin-top: 0.25rem;
+}
+
+/* ── Skill Rarity Badge ──────────────────────────────────── */
+.skill-rarity-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 0.15rem 0.5rem;
+  border-radius: 8px;
+  cursor: default;
+  transition: transform 0.1s;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.skill-rarity-badge:hover { transform: scale(1.03); }
+
+/* ── Course active badge ─────────────────────────────────── */
+.course-active-badge {
+  font-size: 0.72rem;
+  color: var(--blue);
+  background: rgba(52,152,219,0.12);
+  border: 1px solid rgba(52,152,219,0.3);
+  border-radius: 6px;
+  padding: 0.25rem 0.5rem;
+  margin-top: 0.3rem;
+  animation: coursePulse 2s ease infinite;
+}
+@keyframes coursePulse {
+  0%,100% { opacity: 1; }
+  50%      { opacity: 0.6; }
+}
+
+/* ── Today's Guest order card ────────────────────────────── */
+.order-card.todays-order {
+  border-color: #f5a623;
+  background: linear-gradient(135deg, var(--surface), rgba(245,166,35,0.07));
+  animation: todaysPulse 2s ease infinite;
+}
+@keyframes todaysPulse {
+  0%,100% { box-shadow: 0 0 0 0   rgba(245,166,35,0); }
+  50%      { box-shadow: 0 0 0 6px rgba(245,166,35,0.25); }
+}
+
+.order-type-tag.todays {
+  background: rgba(245,166,35,0.2);
+  color: #f5a623;
+  border: 1px solid rgba(245,166,35,0.4);
+  font-size: 0.65rem;
+  font-weight: 800;
+  padding: 0.1rem 0.4rem;
+  border-radius: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+/* ── Waiter / Manager role badges ────────────────────────── */
+.worker-role-badge.waiter  { background: rgba(26,188,156,0.2); color: #1abc9c; }
+.worker-role-badge.manager { background: rgba(155,89,182,0.2); color: #9b59b6; }
+
+/* ── Passive buff status line (waiter / manager) ─────────── */
+.worker-cashier-status {
+  font-size: 0.78rem;
+  background: rgba(52,152,219,0.10);
+  border: 1px solid rgba(52,152,219,0.25);
+  border-radius: 6px;
+  padding: 0.3rem 0.55rem;
+  margin-top: 0.25rem;
+}
+/* Waiter uses teal, manager uses purple */
+.worker-card-new:has(.worker-role-badge.waiter) .worker-cashier-status {
+  background: rgba(26,188,156,0.10);
+  border-color: rgba(26,188,156,0.25);
+  color: #1abc9c;
+}
+.worker-card-new:has(.worker-role-badge.manager) .worker-cashier-status {
+  background: rgba(155,89,182,0.10);
+  border-color: rgba(155,89,182,0.25);
+  color: #9b59b6;
+}

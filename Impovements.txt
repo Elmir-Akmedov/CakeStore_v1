@@ -1,0 +1,159 @@
+The biggest bugs I see are these:
+
+start_baking() trusts raw size input. It immediately uses recipe.get_price(size), recipe.get_bake_seconds(size), and SIZE_SLICES[size] with no validation, so an invalid size can crash the request with a KeyError. That is a real server-side bug, not just a polish issue. Fix it by validating size against SIZE_SLICES before any lookup and returning a clean error.
+Your frontend sends POST requests as JSON with only Content-Type: application/json, but I do not see any CSRF token being attached in game.js. If your Django views are not explicitly csrf_exempt, most of these calls will fail. Fix it by adding CSRF handling in api() or by using a safe Django token flow.
+_last_worker_tick is a module-global throttle. That works in one Python process, but it becomes unreliable if you run multiple server workers or restart the process, because each process has its own copy of that variable. The result can be duplicated or inconsistent worker actions. A DB-backed lock or a single authoritative tick job is safer.
+Several model fields exist but are not really used by the simulation: service_speed, special_skill, and the multitasker / fresh_expert ideas are defined in Worker, but the engine mostly only uses bake_speed through bake_time_factor. That makes part of your game data decorative instead of functional.
+The code mutates shared game state in many places without visible transaction protection: baking, fulfilling orders, hiring, firing, buying ovens, and ending the day all touch money, orders, and inventory. With polling and multiple requests, race conditions are possible. Wrap the critical actions in transaction.atomic() and lock the relevant rows when you update them.
+The order timer in the UI is approximate, not exact. renderOrders() uses a fixed maxSec = 360, but real order patience ranges from 90 to 360 seconds and urgency changes at 60/30 seconds. That means the progress bar will look wrong for many orders. Use the actual expiry time or a per-order max duration from the backend.
+
+What I would improve first, in order:
+
+Add validation and error handling on every API action, starting with bake, fulfill, hire, buy-oven, assign, and worker-mode.
+Fix CSRF for all POST requests from game.js.
+Wrap state-changing operations in database transactions and row locks.
+Make worker stats actually affect gameplay, especially service_speed and special_skill.
+Replace the rough UI timer logic with backend-derived timing data.
+Add tests for the core flows: start baking, auto-baking, order fulfillment, expiry, end-of-day settlement, hiring/firing, and oven assignment.
+
+A practical improvement plan would be:
+
+Phase 1: protect correctness. Add input validation, CSRF, transactions, and tests for the main API actions.
+Phase 2: make the game rules consistent. Decide how worker skills, freshness, oven tiers, and order urgency should really work, then implement those rules in one place in game_engine.py.
+Phase 3: improve the frontend. Use exact timer data, reduce unnecessary full rerenders, and show clearer error states when an API call fails.
+Phase 4: balance and polish. Tune prices, salaries, bake times, reputation changes, and unlock pacing so the game feels fair.
+
+
+rewrite your game_engine (full clean architecture)
+design database schema like real tycoon games
+add AI workers (auto decision making)
+or convert this into multiplayer
+
+I found a few concrete frontend mismatches too: the recipe preview fetches state a second time, the bake preview uses a hardcoded 30% ingredient cost while the backend uses the recipe’s real percentage, and the order timer is using a fake max value instead of backend timing. Those are easy wins after the backend loop is fixed.
+
+Thought for 43s
+
+This is the right moment to switch from “poll-driven simulation” to a server-authoritative game loop. Right now your frontend polls /api/state/ every 500ms, and that endpoint also advances the world by finishing cakes, running workers, generating orders, and expiring orders. That means a GET request is changing game state, so the client is effectively driving time. On top of that, all POST endpoints are csrf_exempt, and the views do very little input validation before handing values into the engine.
+
+The loop I would move to
+
+The backend should own time. The frontend should only:
+
+send player commands,
+fetch snapshots,
+render state.
+
+A cleaner loop looks like this:
+
+def tick_game(now=None):
+    now = now or timezone.now()
+    with transaction.atomic():
+        state = GameState.objects.select_for_update().get(pk=1)
+
+        if not state.game_started:
+            return
+        if not state.is_open:
+            return
+
+        complete_finished_cakes(now)
+        process_worker_actions(now)
+        generate_due_orders(now)
+        expire_due_orders(now)
+
+        state.last_tick_at = now
+        state.save(update_fields=['last_tick_at'])
+
+
+Then:
+
+GET /api/state/ becomes read-only snapshot data,
+POST /api/tick/ is handled by a scheduler/background job, not the browser,
+or, if you want the lightest possible setup, a management command runs the tick loop every second.
+
+That is the biggest redesign you need.
+
+File-by-file improvements
+models.py
+
+Your models are close, but they need a few structural upgrades. GameState should store a clock field like last_tick_at so the game can advance independently of the frontend. CustomerOrder should store a real time budget field, because the UI currently uses a hardcoded 360-second timer while the backend creates orders with 90–360 seconds of patience. Worker.skill_level, bake_speed, service_speed, and special_skill are defined, but not all of them affect gameplay yet, so either wire them into the simulation or simplify them. Oven would also benefit from an explicit “starter oven” flag instead of depending on pk=1, which is fragile.
+
+What I would add:
+
+GameState.last_tick_at
+CustomerOrder.max_patience_sec or created_at + expires_at
+Oven.is_starter
+validation in model clean() methods for size/mode fields
+game_engine.py
+
+This is where the main redesign belongs. Right now get_full_state() mutates the world by calling check_baking(), worker_tick(), maybe_generate_order(), and expire_orders() before returning data. That is the core architectural problem. Move that logic into a dedicated tick_game() function, make it transactional, and keep get_full_state() purely read-only.
+
+The engine should also:
+
+remove the global _last_worker_tick throttle, because it is process-local and breaks under multiple workers,
+validate size before using SIZE_SLICES[size] or get_bake_seconds(size),
+use select_for_update() for critical money/order/inventory operations,
+make worker skills matter in real mechanics, not just in UI labels,
+use Decimal consistently and only convert to float at serialization.
+
+A good split is:
+
+advance_game(now) → simulation only,
+snapshot_state() → serialization only,
+fulfill_order(), start_baking(), hire_worker(), buy_oven() → atomic domain actions.
+views.py
+
+This layer should be thin. Right now it is thin-ish, but it has two important issues: every mutation endpoint is csrf_exempt, and several endpoints trust raw values too much. That means bad input can crash the server, and CSRF protection is disabled across the whole game API.
+
+What to change:
+
+remove @csrf_exempt,
+add CSRF token support in game.js,
+validate recipe_id, worker_id, oven_id, role, tier, work_mode, and size,
+wrap write endpoints in transaction.atomic(),
+return proper status codes for invalid input, not found, or conflict,
+make api_state() read-only and let a background tick job advance the game.
+
+Also, api_worker_mode() can currently crash if target_recipe_id is invalid, because it calls CakeRecipe.objects.get(...) without handling DoesNotExist. That needs a try/except path.
+
+game.js
+
+Your UI logic is usable, but it still contains a few backend assumptions that will cause mismatches. The poll interval is 500ms, which is more aggressive than your own comments suggest, and the frontend currently calls /api/state/ twice: once for polling and once again in renderRecipes(). That is unnecessary load and creates two separate render paths.
+
+Specific fixes:
+
+add CSRF token support in api(),
+stop using the second fetch in renderRecipes() and render recipes from G.recipes,
+replace the hardcoded 0.30 bake cost preview with r.ingredient_cost_pct,
+replace the hardcoded maxSec = 360 order timer with a backend-provided max patience value,
+reduce polling to 1000ms or 2000ms once the backend is authoritative,
+prevent overlapping polls with a simple inFlight guard.
+
+One very important mismatch: the bake preview says cost is always 30% of sell price, but the backend uses recipe.ingredient_cost_pct, so those numbers will drift whenever a recipe uses a different cost percentage.
+
+index.html
+
+This file is mostly a shell, which is good. The main cleanup is to remove the inline renderRecipes() fetch and move that rendering into game.js, so the UI has one source of truth. The current HTML also hardcodes shop cards, which is okay for a simple game, but those should ideally come from backend data later.
+
+I would improve:
+
+use defer on the script tag,
+remove the inline recipes fetch,
+add a small loading state for initial state boot,
+keep the markup semantic with main / section wrappers.
+style.css
+
+The styling is already decent and organized. The main improvements are structural and responsive:
+
+use minmax(0, 1fr) in the grid columns to avoid overflow,
+change 100vh to 100dvh on the main game screen for mobile stability,
+clean up old unused styles like .worker-card if you fully commit to .worker-card-new,
+make the panels scroll independently more predictably on narrow screens.
+
+Your CSS already supports the newer worker card design and the tab layout, so this file mostly needs cleanup and responsiveness tuning rather than a full rewrite.
+
+Priority order
+Make /api/state/ read-only and move simulation to a server tick.
+Remove csrf_exempt and add real CSRF handling.
+Add input validation and transaction safety in views.py and game_engine.py.
+Fix frontend/backend mismatches: bake cost, order timer, duplicate recipe fetch.
+Wire worker stats and special skills into actual gameplay.

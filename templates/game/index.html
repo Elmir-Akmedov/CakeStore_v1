@@ -1,0 +1,272 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🎂 Cake Store Manager</title>
+  <link rel="stylesheet" href="{% static 'css/style.css' %}">
+</head>
+<body>
+
+<!-- ── START ─────────────────────────────────────────────────────────────── -->
+<div id="screen-start" class="screen">
+  <div class="start-logo">🎂</div>
+  <h1 class="start-title">Cake Store Manager</h1>
+  <p class="start-subtitle">Build your bakery empire — one slice at a time</p>
+  <div class="start-form">
+    <div class="form-group">
+      <label class="form-label" for="input-store-name">Your Store Name</label>
+      <input id="input-store-name" type="text" placeholder="Sweet Layers" maxlength="60">
+    </div>
+    <button class="btn btn-primary btn-lg btn-full" onclick="startGame()">🍰 Start Baking</button>
+  </div>
+  <div style="color:var(--muted);font-size:0.78rem;max-width:380px;text-align:center;line-height:1.8;margin-top:1rem">
+    Hire bakers · Buy ovens · Unlock recipes · Fulfill orders · Grow reputation
+  </div>
+</div>
+
+<!-- ── MORNING BRIEFING ──────────────────────────────────────────────────── -->
+<div id="screen-briefing" class="screen">
+  <div class="briefing-card">
+    <div class="briefing-title" id="briefing-day-title">☀️ Good Morning!</div>
+    <div id="briefing-body"></div>
+    <div style="margin-top:1.25rem">
+      <button class="btn btn-success btn-lg btn-full" onclick="closeBriefing()">🔓 Open Store</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── MAIN GAME ──────────────────────────────────────────────────────────── -->
+<div id="screen-game" class="screen">
+
+  <!-- Top Bar -->
+  <div id="topbar">
+    <div class="topbar-brand">🎂 <span id="tb-store">Cake Store</span></div>
+    <div class="topbar-stats">
+      <div class="stat-chip">
+        <span class="label">Day</span>
+        <span class="value" id="tb-day">1</span>
+      </div>
+      <div class="stat-chip money">
+        <span class="label" data-tip="Your cash — goes negative if you overspend">💰</span>
+        <span class="value" id="tb-money">$0.00</span>
+      </div>
+      <div class="stat-chip rep">
+        <span class="label" data-tip="Reputation — affects order speed, pricing, and which customers visit">⭐</span>
+        <span class="value" id="tb-rep-val">50/100</span>
+        <div class="rep-bar" style="width:50px">
+          <div class="rep-fill" id="tb-rep-fill" style="width:50%"></div>
+        </div>
+        <span id="tb-tier" style="font-size:0.65rem"></span>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <div class="notif-btn" onclick="toggleNotifications()"
+           data-tip="Activity log — see what workers are doing">
+        🔔<div class="notif-badge" id="notif-badge"></div>
+      </div>
+      <button id="btn-open-store" class="btn btn-success btn-sm"
+              data-tip="Open the store — customers start arriving"
+              onclick="openStore()" disabled>🔓 Open</button>
+      <button id="btn-end-day" class="btn btn-warning btn-sm"
+              data-tip="Close for the day — pay salaries, discard stale cakes"
+              onclick="endDay()" disabled>🌙 End Day</button>
+    </div>
+  </div>
+
+  <div id="event-banner" class="event-banner" style="display:none"></div>
+  <div id="store-banner" class="status-banner closed">🔴 STORE CLOSED</div>
+  <div id="notif-panel"></div>
+
+  <!-- 3-Column Layout -->
+  <div id="game-layout">
+
+    <!-- ── LEFT: Ovens / Baking / Recipes ──────────────────────────────── -->
+    <div class="panel">
+      <div id="left-tabs" class="tab-bar">
+        <button class="tab-btn active" data-tab="tab-ovens"
+                data-tip="Your ovens — assign bakers and start baking"
+                onclick="switchTab('left-tabs','tab-ovens')">🔥 Ovens</button>
+        <button class="tab-btn" data-tab="tab-baking"
+                data-tip="Cakes currently baking"
+                onclick="switchTab('left-tabs','tab-baking')">⏳ Baking</button>
+        <button class="tab-btn" data-tab="tab-recipes"
+                data-tip="Buy new recipes from the shop"
+                onclick="switchTab('left-tabs','tab-recipes')">📖 Recipes</button>
+      </div>
+      <div id="tab-ovens"   class="tab-content active"><div id="panel-ovens"></div></div>
+      <div id="tab-baking"  class="tab-content"><div id="panel-baking"></div></div>
+      <div id="tab-recipes" class="tab-content">
+        <div id="panel-recipe-shop" style="padding:0.5rem;display:flex;flex-direction:column;gap:0.5rem">
+          <div class="empty-state"><div class="empty-icon">📖</div>Loading recipes…</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── CENTRE: Shelf / Orders ───────────────────────────────────────── -->
+    <div class="panel">
+      <div id="centre-tabs" class="tab-bar">
+        <button class="tab-btn active" data-tab="tab-inventory"
+                data-tip="Cakes on the shelf ready to sell"
+                onclick="switchTab('centre-tabs','tab-inventory')">🍰 Shelf</button>
+        <button class="tab-btn" data-tab="tab-orders"
+                data-tip="Pending customer orders — fulfill before the timer runs out"
+                onclick="switchTab('centre-tabs','tab-orders')">🛎 Orders</button>
+      </div>
+      <div id="tab-inventory" class="tab-content active"><div id="panel-inventory"></div></div>
+      <div id="tab-orders"    class="tab-content"><div id="panel-orders"></div></div>
+    </div>
+
+    <!-- ── RIGHT: Staff / Ovens / Upgrades / History ────────────────────── -->
+    <div class="panel">
+      <div id="right-tabs" class="tab-bar">
+        <button class="tab-btn active" data-tab="tab-staff"
+                data-tip="Manage hired staff — set work modes, assign ovens, send on courses"
+                onclick="switchTab('right-tabs','tab-staff')">👥 Staff</button>
+        <button class="tab-btn" data-tab="tab-ovenshop"
+                data-tip="Buy more ovens to bake multiple cakes simultaneously"
+                onclick="switchTab('right-tabs','tab-ovenshop')">🔥 Ovens</button>
+        <button class="tab-btn" data-tab="tab-upgrades"
+                data-tip="One-time kitchen upgrades that permanently improve your store"
+                onclick="switchTab('right-tabs','tab-upgrades')">✨ Upgrades</button>
+        <button class="tab-btn" data-tab="tab-history"
+                data-tip="Day-by-day performance history"
+                onclick="switchTab('right-tabs','tab-history')">📊 History</button>
+      </div>
+
+      <!-- Staff tab -->
+      <div id="tab-staff" class="tab-content active">
+        <div id="panel-staff"></div>
+      </div>
+
+      <!-- Oven shop tab -->
+      <div id="tab-ovenshop" class="tab-content">
+        <div style="padding:0.75rem;display:flex;flex-direction:column;gap:0.6rem">
+          <div class="shop-item">
+            <div class="shop-item-name">🔥 Basic Oven</div>
+            <div class="shop-item-desc">Speed ×1.0 — standard baking</div>
+            <div style="display:flex;align-items:center;justify-content:space-between">
+              <span class="shop-item-cost">$200</span>
+              <button class="btn btn-info btn-sm"
+                      data-tip="Adds one more baking slot at standard speed"
+                      onclick="buyOven('basic')">Buy</button>
+            </div>
+          </div>
+          <div class="shop-item">
+            <div class="shop-item-name">🔥 Pro Oven</div>
+            <div class="shop-item-desc">Speed ×1.5 — 33% faster baking</div>
+            <div style="display:flex;align-items:center;justify-content:space-between">
+              <span class="shop-item-cost">$500</span>
+              <button class="btn btn-info btn-sm"
+                      data-tip="Bakes 33% faster than a Basic Oven"
+                      onclick="buyOven('pro')">Buy</button>
+            </div>
+          </div>
+          <div class="shop-item">
+            <div class="shop-item-name">🔥 Industrial Oven</div>
+            <div class="shop-item-desc">Speed ×2.2 — more than double speed</div>
+            <div style="display:flex;align-items:center;justify-content:space-between">
+              <span class="shop-item-cost">$1200</span>
+              <button class="btn btn-info btn-sm"
+                      data-tip="Bakes more than twice as fast — best for high-demand recipes"
+                      onclick="buyOven('industrial')">Buy</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Upgrades tab -->
+      <div id="tab-upgrades" class="tab-content">
+        <div id="panel-upgrades" style="padding:0.75rem;display:flex;flex-direction:column;gap:0.6rem"></div>
+      </div>
+
+      <!-- History tab -->
+      <div id="tab-history" class="tab-content">
+        <div id="panel-history"></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ── REPORT SCREEN ─────────────────────────────────────────────────────── -->
+<div id="screen-report" class="screen">
+  <div class="report-card">
+    <div id="report-content"></div>
+    <div style="margin-top:1.5rem">
+      <button class="btn btn-primary btn-full btn-lg" onclick="continueFromReport()">☀️ Next Day →</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── BAKE MODAL ────────────────────────────────────────────────────────── -->
+<div id="bake-modal" class="modal-backdrop" onclick="if(event.target===this)closeBakeModal()">
+  <div class="modal">
+    <div class="modal-title" id="bake-modal-title">🔥 Bake a Cake</div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Recipe</label>
+        <select id="bake-recipe-select" onchange="updateBakePreview()"></select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Size</label>
+        <select id="bake-size-select" onchange="updateBakePreview()">
+          <option value="Small">Small — 4 slices</option>
+          <option value="Medium" selected>Medium — 8 slices</option>
+          <option value="Large">Large — 12 slices</option>
+        </select>
+      </div>
+      <div id="bake-preview" style="background:var(--surface2);border-radius:8px;padding:0.75rem;min-height:2.5rem"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeBakeModal()">Cancel</button>
+      <button class="btn btn-warning" data-tip="Ingredient cost deducted immediately"
+              onclick="confirmBake()">🔥 Start Baking</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── HIRE MODAL ────────────────────────────────────────────────────────── -->
+<div id="hire-modal" class="modal-backdrop" onclick="if(event.target===this)closeHireModal()">
+  <div class="modal" style="max-width:520px">
+    <div class="modal-title">
+      👥 Hire Staff
+      <span style="font-size:0.75rem;color:var(--muted);font-weight:400;margin-left:0.5rem">Pool refreshes every few days</span>
+    </div>
+    <div id="hire-modal-body" class="modal-body" style="max-height:62vh;overflow-y:auto;gap:0.6rem"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary btn-full" onclick="closeHireModal()">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── FIRE WORKER MODAL ─────────────────────────────────────────────────── -->
+<div id="fire-modal" class="modal-backdrop" onclick="if(event.target===this)closeFireModal()">
+  <div class="modal" style="max-width:340px;text-align:center">
+    <div class="fire-modal-icon">👋</div>
+    <div class="fire-modal-title">Let go of <span id="fire-modal-name"></span>?</div>
+    <div class="fire-modal-sub">This cannot be undone. The worker leaves immediately.</div>
+    <div class="fire-modal-salary" id="fire-modal-salary"></div>
+    <div class="modal-footer" style="justify-content:center;gap:0.75rem">
+      <button class="btn btn-secondary" style="flex:1" onclick="closeFireModal()">Cancel</button>
+      <button class="btn btn-danger"    style="flex:1" onclick="confirmFire()">Fire Worker</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── WORKER DETAIL MODAL ───────────────────────────────────────────────── -->
+<div id="worker-detail-modal" class="modal-backdrop" onclick="if(event.target===this)closeWorkerDetail()">
+  <div class="modal" style="max-width:480px">
+    <div class="modal-title" style="display:flex;justify-content:space-between;align-items:center">
+      <span>Worker Profile</span>
+      <button class="btn btn-secondary btn-sm" onclick="closeWorkerDetail()">✕</button>
+    </div>
+    <div id="worker-detail-body" class="modal-body" style="max-height:72vh;overflow-y:auto"></div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+<script src="{% static 'js/game.js' %}"></script>
+</body>
+</html>
