@@ -1,13 +1,18 @@
 """
-game_engine.py — Phase 2
-New: skill system, waiter/manager roles, recipe shop,
-     Today's Customer, course system, salary rebalance
+game_engine.py — Phase 2 + auth + day-timer
+Changes:
+  - All DB queries scoped to GameState via _state() helper
+  - Thread-local user context set by views before calling engine
+  - day_end_at: auto-end day when timer expires (Issue 8)
+  - Stronger rarity hire cost multipliers (Issue 5)
 """
 import random
+import threading
 from datetime import timedelta
 from decimal import Decimal
 from collections import Counter
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
@@ -30,13 +35,36 @@ OVEN_CATALOG = {
     'industrial': {'name':'Industrial Oven', 'cost':1200, 'speed_bonus':2.2,  'tier':'industrial'},
 }
 
-# Salary ranges by role and star level: (hire_min, hire_max, salary_min, salary_max)
 SALARY_RANGES = {
     'baker':   {1:(100,150,30,50),   2:(150,400,50,90),  3:(400,900,90,150)},
     'cashier': {1:(80, 140,25,45),   2:(130,350,45,80),  3:(350,800,80,130)},
     'waiter':  {1:(80, 130,25,45),   2:(130,300,45,80),  3:(300,700,80,130)},
     'manager': {1:(200,400,60,90),   2:(400,800,90,140), 3:(800,1500,140,200)},
 }
+
+# Issue 5: stronger rarity multipliers for hire cost
+RARITY_COST_PREMIUM = {
+    'standard':  1.0,
+    'rare':      1.30,
+    'epic':      1.75,
+    'legendary': 2.50,
+    'unique':    4.00,
+}
+
+# ── Thread-local user context ──────────────────────────────────────────────────
+_local = threading.local()
+
+def set_current_user(user):
+    """Call from views before any engine function."""
+    _local.user = user
+
+def get_current_user():
+    return getattr(_local, 'user', None)
+
+def _state():
+    """Get the GameState for the current user."""
+    return GameState.get(get_current_user())
+
 
 _last_tick_time = None
 
@@ -47,10 +75,12 @@ def D(v):
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 def log_event(icon, message, log_type='info', day=None):
+    state = _state()
     if day is None:
-        day = GameState.get().day
-    EventLog.objects.create(icon=icon, message=message, log_type=log_type, day=day)
-    old = EventLog.objects.order_by('-timestamp').values_list('id', flat=True)[50:]
+        day = state.day
+    EventLog.objects.create(
+        game_state=state, icon=icon, message=message, log_type=log_type, day=day)
+    old = EventLog.objects.filter(game_state=state).order_by('-timestamp').values_list('id', flat=True)[50:]
     if old:
         EventLog.objects.filter(pk__in=list(old)).delete()
 
@@ -74,22 +104,24 @@ def validate_recipe(recipe_id):
         raise ValueError(f"Recipe {recipe_id} not found or locked.")
 
 def validate_oven(oven_id):
+    state = _state()
     try:
         oven_id = int(oven_id)
     except (TypeError, ValueError):
         raise ValueError("oven_id must be an integer.")
     try:
-        return Oven.objects.get(pk=oven_id, is_active=True)
+        return Oven.objects.get(pk=oven_id, game_state=state, is_active=True)
     except Oven.DoesNotExist:
         raise ValueError(f"Oven {oven_id} not found.")
 
 def validate_worker(worker_id):
+    state = _state()
     try:
         worker_id = int(worker_id)
     except (TypeError, ValueError):
         raise ValueError("worker_id must be an integer.")
     try:
-        return Worker.objects.get(pk=worker_id, is_active=True)
+        return Worker.objects.get(pk=worker_id, game_state=state, is_active=True)
     except Worker.DoesNotExist:
         raise ValueError(f"Worker {worker_id} not found.")
 
@@ -102,12 +134,13 @@ def validate_upgrade(uid):
         raise ValueError(f"Unknown upgrade '{uid}'.")
 
 def validate_hireable_worker(hw_id):
+    state = _state()
     try:
         hw_id = int(hw_id)
     except (TypeError, ValueError):
         raise ValueError("hireable_worker_id must be an integer.")
     try:
-        return HireableWorker.objects.get(pk=hw_id, is_hired=False)
+        return HireableWorker.objects.get(pk=hw_id, game_state=state, is_hired=False)
     except HireableWorker.DoesNotExist:
         raise ValueError("This worker is no longer available.")
 
@@ -121,12 +154,10 @@ def validate_work_mode(mode):
 # ══════════════════════════════════════════════════════════════════
 
 def check_recipe_unlocks():
-    """Auto-unlock starter and day-gated recipes. Shop recipes need purchase."""
-    state   = GameState.get()
+    state   = _state()
     locked  = CakeRecipe.objects.filter(is_unlocked=False, is_starter=False)
     unlocked = []
     for recipe in locked:
-        # Only auto-unlock if no shop_price (free unlock by day/rep)
         if recipe.shop_price is not None:
             continue
         day_ok = recipe.unlock_day is None or state.day >= recipe.unlock_day
@@ -141,7 +172,6 @@ def check_recipe_unlocks():
 
 
 def buy_recipe(recipe_id):
-    """Player purchases a recipe from the shop."""
     try:
         recipe_id = int(recipe_id)
     except (TypeError, ValueError):
@@ -155,7 +185,7 @@ def buy_recipe(recipe_id):
     if recipe.is_unlocked:
         raise ValueError(f"{recipe.name} is already unlocked.")
 
-    state = GameState.get()
+    state = _state()
     if not recipe.can_be_purchased(state):
         raise ValueError(f"{recipe.name} is not available for purchase yet.")
 
@@ -164,7 +194,7 @@ def buy_recipe(recipe_id):
             f"Need ${float(recipe.shop_price):.2f} to unlock {recipe.name}.")
 
     with transaction.atomic():
-        s = GameState.objects.select_for_update().get(pk=1)
+        s = GameState.objects.select_for_update().get(pk=state.pk)
         s.money -= D(recipe.shop_price)
         s.save(update_fields=['money'])
         recipe.is_unlocked = True
@@ -185,17 +215,17 @@ def roll_daily_event(state):
 
     weights = [e['weight'] for e in DAILY_EVENTS]
     event   = random.choices(DAILY_EVENTS, weights=weights, k=1)[0]
-    event   = dict(event)  # copy so we can mutate
+    event   = dict(event)
 
     if event['id'] == 'oven_fault':
-        ovens = list(Oven.objects.filter(is_active=True))
+        ovens = list(Oven.objects.filter(game_state=state, is_active=True))
         if ovens:
             broken = random.choice(ovens)
             event['affected_oven_id']   = broken.pk
             event['affected_oven_name'] = broken.name
 
     if event['id'] == 'sick_day':
-        bakers = list(Worker.objects.filter(role='baker', is_active=True))
+        bakers = list(Worker.objects.filter(game_state=state, role='baker', is_active=True))
         if bakers:
             sick = random.choice(bakers)
             event['sick_worker_id']   = sick.pk
@@ -205,7 +235,7 @@ def roll_daily_event(state):
         state.rush_ends_at = timezone.now() + timedelta(seconds=60)
 
     if event['id'] == 'todays_guest':
-        state.todays_guest_id = None  # will be set when that order is created
+        state.todays_guest_id = None
 
     if event['id'] == 'course_discount':
         state.course_discount_active = True
@@ -228,7 +258,7 @@ def roll_daily_event(state):
 # ══════════════════════════════════════════════════════════════════
 
 def award_worker_xp(worker, xp_amount):
-    state  = GameState.get()
+    state  = _state()
     buffs  = state._get_manager_buffs()
     xp_amount = int(xp_amount * buffs.get('xp_mult', 1.0))
 
@@ -264,7 +294,6 @@ def award_worker_xp(worker, xp_amount):
 # ══════════════════════════════════════════════════════════════════
 
 def start_course(worker_id):
-    """Send a worker on a skill upgrade course."""
     worker = validate_worker(worker_id)
 
     current_rarity = worker.skill_rarity or 'standard'
@@ -283,7 +312,7 @@ def start_course(worker_id):
     if not cfg:
         raise ValueError("No course available for this upgrade path.")
 
-    state = GameState.get()
+    state = _state()
     cost  = cfg['cost']
     if state.course_discount_active:
         cost = round(cost * 0.70, 2)
@@ -295,7 +324,7 @@ def start_course(worker_id):
         raise ValueError(f"{worker.name} is already on a course.")
 
     with transaction.atomic():
-        s = GameState.objects.select_for_update().get(pk=1)
+        s = GameState.objects.select_for_update().get(pk=state.pk)
         s.money -= D(cost)
         s.save(update_fields=['money'])
         worker.course_target_rarity = target
@@ -308,9 +337,9 @@ def start_course(worker_id):
 
 
 def check_courses():
-    """Complete courses for workers whose finish day has arrived."""
-    state       = GameState.get()
+    state       = _state()
     graduating  = Worker.objects.filter(
+        game_state=state,
         is_active=True,
         course_finish_day__lte=state.day,
         course_target_rarity__gt='',
@@ -318,7 +347,6 @@ def check_courses():
     results = []
     for worker in graduating:
         new_rarity = worker.course_target_rarity
-        # Upgrade the skill to new rarity — keep same skill id
         worker.skill_rarity          = new_rarity
         worker.course_target_rarity  = ''
         worker.course_finish_day     = None
@@ -337,11 +365,34 @@ def check_courses():
 
 
 # ══════════════════════════════════════════════════════════════════
-#  TICK
+#  TICK  (Issue 8: auto-end day when timer expires)
 # ══════════════════════════════════════════════════════════════════
 
 def tick():
     global _last_tick_time
+
+    state = _state()
+
+    # Issue 8: auto-end day if timer expired
+    auto_ended = False
+    if (state.is_open and state.day_end_at and
+            timezone.now() >= state.day_end_at):
+        try:
+            result = end_day()
+            auto_ended = True
+            return {
+                'newly_done':   [],
+                'new_order':    None,
+                'expired_count': 0,
+                'new_unlocks':  [],
+                'level_ups':    [],
+                'courses_done': [],
+                'auto_ended':   True,
+                'report':       result.get('report'),
+                'game_over':    result.get('game_over', False),
+            }
+        except Exception:
+            pass
 
     newly_done   = _check_baking()
     new_unlocks  = check_recipe_unlocks()
@@ -363,15 +414,17 @@ def tick():
         'new_unlocks':   new_unlocks,
         'level_ups':     [lu for lu in level_ups if lu],
         'courses_done':  courses_done,
+        'auto_ended':    False,
     }
 
 
 def _check_baking():
+    state = _state()
     now  = timezone.now()
     done = list(
         BakedCake.objects
         .select_for_update()
-        .filter(is_baking=True, bake_finish_at__lte=now)
+        .filter(game_state=state, is_baking=True, bake_finish_at__lte=now)
         .select_related('recipe', 'oven')
     )
     if not done:
@@ -384,6 +437,7 @@ def _check_baking():
             cake.save(update_fields=['is_baking', 'baked_time'])
             if cake.oven_id:
                 baker = Worker.objects.filter(
+                    game_state=state,
                     assigned_oven_id=cake.oven_id, role='baker', is_active=True
                 ).first()
                 if baker:
@@ -397,21 +451,14 @@ def _check_baking():
 
 
 def _worker_tick():
-    state = GameState.get()
+    state = _state()
     if not state.is_open:
         return []
 
-    workers   = list(Worker.objects.filter(is_active=True)
+    workers   = list(Worker.objects.filter(game_state=state, is_active=True)
                      .select_related('assigned_oven', 'target_recipe'))
     level_ups = []
     sick_id   = (state.active_event or {}).get('sick_worker_id')
-
-    # Check if spirit_of_service waiter is active
-    no_expiry = any(
-        Worker.objects.filter(role='waiter', is_active=True,
-                              skill_id='spirit_of_service').exists()
-        for _ in [1]
-    )
 
     for worker in workers:
         if sick_id and worker.pk == sick_id:
@@ -437,21 +484,17 @@ def _worker_tick():
                 _auto_bake(worker, state, force_recipe=worker.target_recipe)
 
         elif worker.role == 'waiter':
-            # Waiters don't fulfill orders — they passively buff
-            # table_radar: auto-bump the most urgent expiring order
             sc = SKILL_CATALOGUE.get(worker.skill_id or '', {})
             if sc.get('effect') == 'auto_bump':
                 _waiter_bump_urgent()
-
-        # Manager: buffs are applied via state._get_manager_buffs() — no tick action needed
 
     return level_ups
 
 
 def _waiter_bump_urgent():
-    """Add 30s to the most critically-expiring pending order."""
+    state = _state()
     critical = (CustomerOrder.objects
-                .filter(status='pending')
+                .filter(game_state=state, status='pending')
                 .order_by('expires_at')
                 .first())
     if critical and critical.seconds_remaining < 60:
@@ -463,11 +506,10 @@ def _waiter_bump_urgent():
 
 def _worker_fulfill_order(worker, state):
     orders = (CustomerOrder.objects
-              .filter(status='pending')
+              .filter(game_state=state, status='pending')
               .select_related('recipe')
               .order_by('expires_at'))
 
-    # Crowd reader: prioritize VIP/urgent
     sc = SKILL_CATALOGUE.get(worker.skill_id or '', {})
     if sc.get('effect') == 'vip_priority':
         vip_orders = orders.filter(customer_type__in=['vip', 'todays'])
@@ -496,7 +538,7 @@ def _auto_bake(worker, state, force_recipe=None):
     if not worker.assigned_oven_id:
         return
     try:
-        oven = Oven.objects.get(pk=worker.assigned_oven_id, is_active=True)
+        oven = Oven.objects.get(pk=worker.assigned_oven_id, game_state=state, is_active=True)
     except Oven.DoesNotExist:
         return
     if oven.is_busy:
@@ -506,7 +548,6 @@ def _auto_bake(worker, state, force_recipe=None):
     speed_penalty = 0.5 if affected_oven == oven.pk else 1.0
 
     allowed_sizes = SKILL_SIZES.get(worker.skill_level, ['Small'])
-    # Manager natural_leader buffs skill level effectively
     buffs = state._get_manager_buffs()
     if buffs.get('star_buff'):
         allowed_sizes = SKILL_SIZES.get(min(3, worker.skill_level + 1), allowed_sizes)
@@ -517,7 +558,7 @@ def _auto_bake(worker, state, force_recipe=None):
         recipe = force_recipe
         size   = max_size
     else:
-        needed = _most_needed_recipe(allowed_sizes)
+        needed = _most_needed_recipe(allowed_sizes, state)
         if needed:
             recipe, size = needed
         else:
@@ -539,11 +580,12 @@ def _auto_bake(worker, state, force_recipe=None):
         pass
 
 
-def _most_needed_recipe(allowed_sizes):
-    pending = (CustomerOrder.objects.filter(status='pending')
+def _most_needed_recipe(allowed_sizes, state):
+    pending = (CustomerOrder.objects.filter(game_state=state, status='pending')
                .select_related('recipe').order_by('expires_at'))
     for order in pending:
         in_stock = BakedCake.objects.filter(
+            game_state=state,
             recipe=order.recipe, is_baking=False, remaining_slices__gt=0).exists()
         if not in_stock:
             return (order.recipe, allowed_sizes[-1])
@@ -555,7 +597,7 @@ def _most_needed_recipe(allowed_sizes):
 # ══════════════════════════════════════════════════════════════════
 
 def _maybe_generate_order():
-    state = GameState.get()
+    state = _state()
     if not state.is_open:
         return None
     if state.next_order_at is None or timezone.now() < state.next_order_at:
@@ -565,7 +607,7 @@ def _maybe_generate_order():
     interval      = max(3, int(base_interval / state.order_frequency_mult))
 
     with transaction.atomic():
-        s = GameState.objects.select_for_update().get(pk=1)
+        s = GameState.objects.select_for_update().get(pk=state.pk)
         s.next_order_at = timezone.now() + timedelta(seconds=interval)
         s.save(update_fields=['next_order_at'])
 
@@ -573,7 +615,6 @@ def _maybe_generate_order():
     if not recipes:
         return None
 
-    # Today's guest event — spawn special customer once
     active_event = state.active_event or {}
     spawn_todays = (
         active_event.get('id') == 'todays_guest'
@@ -590,12 +631,11 @@ def _maybe_generate_order():
         ctype   = random.choices(types, weights=weights, k=1)[0]
         cmeta   = CUSTOMER_TYPE_META[ctype]
 
-    # VIP party override
     if active_event.get('id') == 'vip_party' and state.event_counter < 3:
         ctype = 'vip'
         cmeta = CUSTOMER_TYPE_META['vip']
         with transaction.atomic():
-            s = GameState.objects.select_for_update().get(pk=1)
+            s = GameState.objects.select_for_update().get(pk=state.pk)
             s.event_counter += 1
             s.save(update_fields=['event_counter'])
 
@@ -632,6 +672,7 @@ def _maybe_generate_order():
     patience = int(base_patience * cmeta['patience_mult'] * state.patience_mult)
 
     order = CustomerOrder.objects.create(
+        game_state=state,
         customer_name=random.choice(CUSTOMER_NAMES),
         customer_type=ctype,
         recipe=recipe,
@@ -646,7 +687,7 @@ def _maybe_generate_order():
 
     if spawn_todays:
         with transaction.atomic():
-            s = GameState.objects.select_for_update().get(pk=1)
+            s = GameState.objects.select_for_update().get(pk=state.pk)
             s.todays_guest_id = order.pk
             s.save(update_fields=['todays_guest_id'])
 
@@ -654,24 +695,24 @@ def _maybe_generate_order():
 
 
 def _expire_orders():
+    state = _state()
     now = timezone.now()
     with transaction.atomic():
         expired = CustomerOrder.objects.select_for_update().filter(
-            status='pending', expires_at__lte=now)
+            game_state=state, status='pending', expires_at__lte=now)
         count = expired.count()
         if count:
-            # Check spirit_of_service
             has_spirit = Worker.objects.filter(
-                role='waiter', is_active=True, skill_id='spirit_of_service').exists()
+                game_state=state, role='waiter', is_active=True,
+                skill_id='spirit_of_service').exists()
             if has_spirit:
-                return 0  # no orders expire today
+                return 0
 
-            state   = GameState.objects.select_for_update().get(pk=1)
+            s = GameState.objects.select_for_update().get(pk=state.pk)
             expired.update(status='expired')
 
-            # Waiter diplomatic skill reduces rep loss
             rep_mult = 1.0
-            waiters  = Worker.objects.filter(role='waiter', is_active=True)
+            waiters  = Worker.objects.filter(game_state=state, role='waiter', is_active=True)
             for w in waiters:
                 sc = SKILL_CATALOGUE.get(w.skill_id or '', {})
                 if sc.get('effect') == 'rep_loss_mult':
@@ -679,20 +720,19 @@ def _expire_orders():
 
             rep_hit = int(min(count * 3, 15) * rep_mult)
 
-            # Check if Today's Guest expired — triple penalty
-            todays_id = state.todays_guest_id
+            todays_id = s.todays_guest_id
             if todays_id:
                 todays_expired = CustomerOrder.objects.filter(
                     pk=todays_id, status='expired').exists()
                 if todays_expired:
                     rep_hit = min(100, rep_hit + 15)
                     log_event('👑', "Today's Guest left unhappy! −15 extra reputation!",
-                              log_type='error', day=state.day)
+                              log_type='error', day=s.day)
 
-            state.reputation = max(0, state.reputation - rep_hit)
-            state.save(update_fields=['reputation'])
+            s.reputation = max(0, s.reputation - rep_hit)
+            s.save(update_fields=['reputation'])
             log_event('⏰', f'{count} order(s) expired — rep −{rep_hit}',
-                      log_type='error', day=state.day)
+                      log_type='error', day=s.day)
     return count
 
 
@@ -704,43 +744,44 @@ def start_baking(recipe_id, size, oven_id, speed_penalty=1.0):
     recipe = validate_recipe(recipe_id)
     oven   = validate_oven(oven_id)
     validate_size(size)
+    state  = _state()
 
     with transaction.atomic():
         oven  = Oven.objects.select_for_update().get(pk=oven.pk)
-        state = GameState.objects.select_for_update().get(pk=1)
+        s     = GameState.objects.select_for_update().get(pk=state.pk)
 
         if oven.is_busy:
             raise ValueError(f"{oven.name} is already baking.")
 
         ingredient_cost = round(
             recipe.get_price(size) * recipe.ingredient_cost_pct
-            * state.ingredient_cost_mult, 2)
+            * s.ingredient_cost_mult, 2)
 
-        if float(state.money) < ingredient_cost:
+        if float(s.money) < ingredient_cost:
             raise ValueError(
-                f"Need ${ingredient_cost:.2f}, have ${float(state.money):.2f}.")
+                f"Need ${ingredient_cost:.2f}, have ${float(s.money):.2f}.")
 
         baker   = oven.assigned_workers.filter(role='baker', is_active=True).first()
         baker_f = baker.bake_time_factor if baker else 1.0
-        # Manager global_speed buff
-        buffs    = state._get_manager_buffs()
+        buffs    = s._get_manager_buffs()
         baker_f /= buffs.get('global_speed', 1.0)
 
         base_sec = recipe.get_bake_seconds(size)
         duration = max(5, int(base_sec / oven.speed_bonus * baker_f * speed_penalty))
 
-        state.money -= D(ingredient_cost)
-        state.save(update_fields=['money'])
+        s.money -= D(ingredient_cost)
+        s.save(update_fields=['money'])
         oven.bakes_count += 1
         oven.save(update_fields=['bakes_count'])
 
         now  = timezone.now()
         cake = BakedCake.objects.create(
+            game_state=state,
             recipe=recipe, size=size, is_baking=True,
             bake_finish_at=now + timedelta(seconds=duration),
             bake_duration_sec=duration,
             remaining_slices=SIZE_SLICES[size],
-            oven=oven, day_baked=state.day,
+            oven=oven, day_baked=s.day,
             ingredient_cost=D(ingredient_cost),
         )
 
@@ -764,12 +805,14 @@ def fulfill_order(order_id):
     except (TypeError, ValueError):
         return {'ok': False, 'message': 'Invalid order ID.'}
 
+    state = _state()
+
     with transaction.atomic():
         try:
             order = (CustomerOrder.objects
                      .select_for_update()
                      .select_related('recipe')
-                     .get(pk=order_id, status='pending'))
+                     .get(pk=order_id, game_state=state, status='pending'))
         except CustomerOrder.DoesNotExist:
             return {'ok': False, 'message': 'Order not found or already processed.'}
 
@@ -778,70 +821,63 @@ def fulfill_order(order_id):
             order.save(update_fields=['status'])
             return {'ok': False, 'message': 'This order just expired!'}
 
-        state       = GameState.objects.select_for_update().get(pk=1)
-        current_day = state.day
+        s           = GameState.objects.select_for_update().get(pk=state.pk)
+        current_day = s.day
 
         def shelf_whole():
             qs = (BakedCake.objects.select_for_update()
-                  .filter(recipe=order.recipe, size=order.size, is_baking=False,
-                          remaining_slices=SIZE_SLICES[order.size])
+                  .filter(game_state=state, recipe=order.recipe, size=order.size,
+                          is_baking=False, remaining_slices=SIZE_SLICES[order.size])
                   .order_by('baked_time'))
             if order.want_fresh:
                 qs = qs.filter(day_baked__gte=current_day -
-                               (1 if state.has_upgrade('commercial_fridge') else 0))
+                               (1 if s.has_upgrade('commercial_fridge') else 0))
             return list(qs)
 
         def shelf_slices():
             qs = (BakedCake.objects.select_for_update()
-                  .filter(recipe=order.recipe, is_baking=False, remaining_slices__gt=0)
+                  .filter(game_state=state, recipe=order.recipe,
+                          is_baking=False, remaining_slices__gt=0)
                   .order_by('remaining_slices', 'baked_time'))
             if order.want_fresh:
                 qs = qs.filter(day_baked__gte=current_day -
-                               (1 if state.has_upgrade('commercial_fridge') else 0))
+                               (1 if s.has_upgrade('commercial_fridge') else 0))
             return list(qs)
 
-        # Whole cakes
         for _ in range(order.quantity):
-            s = shelf_whole()
-            if not s:
+            sl = shelf_whole()
+            if not sl:
                 tag = "fresh " if order.want_fresh else ""
                 return {'ok': False,
                         'message': f'No {tag}whole {order.recipe.name} ({order.size}) in stock.'}
-            s[0].remaining_slices = 0
-            s[0].save(update_fields=['remaining_slices'])
+            sl[0].remaining_slices = 0
+            sl[0].save(update_fields=['remaining_slices'])
 
-        # Slices from any cake size
         needed = order.pieces
         while needed > 0:
-            s = shelf_slices()
-            if not s:
+            sl = shelf_slices()
+            if not sl:
                 tag = "fresh " if order.want_fresh else ""
                 return {'ok': False,
                         'message': f'Not enough {tag}slices of {order.recipe.name}.'}
-            cake = s[0]
+            cake = sl[0]
             take = min(cake.remaining_slices, needed)
             cake.remaining_slices -= take
             cake.save(update_fields=['remaining_slices'])
             needed -= take
 
-        # Revenue
-        revenue = order.calculate_revenue(state)
+        revenue = order.calculate_revenue(s)
 
-        # Blogger event
-        if (state.active_event or {}).get('id') == 'blogger' and state.event_counter < 5:
+        if (s.active_event or {}).get('id') == 'blogger' and s.event_counter < 5:
             revenue *= 2
-            state.event_counter += 1
+            s.event_counter += 1
 
-        # Manager revenue buff already in price_mult
-
-        # Tip calculation
         ctype     = CUSTOMER_TYPE_META.get(order.customer_type, {})
         tip_range = ctype.get('tip_range', (0.05, 0.12))
         tip       = 0.0
 
-        # Cashier skill effects on tips
-        cashiers = Worker.objects.filter(role='cashier', is_active=True)
-        tip_chance  = 0.3   # base
+        cashiers    = Worker.objects.filter(game_state=state, role='cashier', is_active=True)
+        tip_chance  = 0.3
         tip_mult    = 1.0
         tip_always  = False
         for c in cashiers:
@@ -857,9 +893,8 @@ def fulfill_order(order_id):
             tip_pct = random.uniform(*tip_range)
             tip     = round(revenue * tip_pct * tip_mult, 2)
 
-        # Waiter maestro: +0.5 rep per fulfilled order
         maestro_rep = sum(
-            0.5 for w in Worker.objects.filter(role='waiter', is_active=True)
+            0.5 for w in Worker.objects.filter(game_state=state, role='waiter', is_active=True)
             if SKILL_CATALOGUE.get(w.skill_id or '', {}).get('effect') == 'rep_per_order'
         )
 
@@ -871,36 +906,32 @@ def fulfill_order(order_id):
         order.tip          = D(tip)
         order.save(update_fields=['status', 'fulfilled_at', 'revenue', 'tip'])
 
-        state.money           += D(total_earned)
-        state.total_revenue   += D(total_earned)
-        state.total_fulfilled += 1
+        s.money           += D(total_earned)
+        s.total_revenue   += D(total_earned)
+        s.total_fulfilled += 1
 
-        # Reputation effects
         rep_gain = 0
         if order.want_fresh:
             rep_gain += 1
         if order.customer_type == 'vip':
             rep_gain += 5
         if order.customer_type == 'todays':
-            # 3× normal rep gain
             rep_gain += 15
             log_event('👑',
                       f"Today's Guest {order.customer_name} was served! +15 reputation!",
-                      log_type='success', day=state.day)
-            # Check customer_whisperer — already guaranteed pleased
+                      log_type='success', day=s.day)
         rep_gain += int(maestro_rep)
 
-        state.reputation = min(100, state.reputation + rep_gain)
+        s.reputation = min(100, s.reputation + rep_gain)
 
-        # Critic event
-        if (state.active_event or {}).get('id') == 'critic' and order.want_fresh:
-            state.critic_fresh_served += 1
-            if state.critic_fresh_served >= 10:
-                state.reputation = min(100, state.reputation + 20)
+        if (s.active_event or {}).get('id') == 'critic' and order.want_fresh:
+            s.critic_fresh_served += 1
+            if s.critic_fresh_served >= 10:
+                s.reputation = min(100, s.reputation + 20)
                 log_event('📰', 'Critic challenge complete! +20 reputation!',
-                          log_type='success', day=state.day)
+                          log_type='success', day=s.day)
 
-        state.save(update_fields=[
+        s.save(update_fields=[
             'money', 'total_revenue', 'total_fulfilled', 'reputation',
             'event_counter', 'critic_fresh_served'])
 
@@ -918,7 +949,7 @@ def fulfill_order(order_id):
 
 
 # ══════════════════════════════════════════════════════════════════
-#  HIRE POOL GENERATION
+#  HIRE POOL
 # ══════════════════════════════════════════════════════════════════
 
 def _star_weights_for_day(day):
@@ -929,7 +960,6 @@ def _star_weights_for_day(day):
 
 
 def _pick_skill_for_role(role, star):
-    """Pick a skill appropriate for the role and star level, with rarity weighting."""
     candidates = [
         (sid, sc) for sid, sc in SKILL_CATALOGUE.items()
         if sc['role'] == role
@@ -937,7 +967,6 @@ def _pick_skill_for_role(role, star):
     if not candidates:
         return '', 'standard'
 
-    # Rarity probability by star level
     rarity_weights = {
         1: {'standard':88,'rare':10,'epic':1.5,'legendary':0.5,'unique':0},
         2: {'standard':60,'rare':28,'epic': 10,'legendary':2,  'unique':0},
@@ -948,7 +977,6 @@ def _pick_skill_for_role(role, star):
     weights  = [rarity_weights[r] for r in rarities]
     chosen_rarity = random.choices(rarities, weights=weights, k=1)[0]
 
-    # Filter by chosen rarity
     matching = [(sid, sc) for sid, sc in candidates if sc['rarity'] == chosen_rarity]
     if not matching:
         matching = [(sid, sc) for sid, sc in candidates if sc['rarity'] == 'standard']
@@ -960,7 +988,7 @@ def _pick_skill_for_role(role, star):
 
 
 def _generate_hire_pool():
-    state       = GameState.get()
+    state       = _state()
     day         = state.day
     weights     = _star_weights_for_day(day)
     stars       = [1, 2, 3]
@@ -969,19 +997,18 @@ def _generate_hire_pool():
     expires_day = day + refresh_ev
 
     used_names = set(
-        list(Worker.objects.filter(is_active=True).values_list('name', flat=True)) +
+        list(Worker.objects.filter(game_state=state, is_active=True).values_list('name', flat=True)) +
         list(HireableWorker.objects.filter(
-            is_hired=False, expires_on_day__gt=day
+            game_state=state, is_hired=False, expires_on_day__gt=day
         ).values_list('name', flat=True))
     )
     pool = [n for n in HIRE_POOL_NAMES if n not in used_names] or HIRE_POOL_NAMES
     random.shuffle(pool)
     pool = pool[:pool_size]
 
-    # Role distribution: more bakers and cashiers, some waiters, rare managers
     role_weights_by_day = {
-        True:  ['baker','baker','cashier','cashier'],             # early days
-        False: ['baker','baker','cashier','cashier','waiter','manager'],  # later
+        True:  ['baker','baker','cashier','cashier'],
+        False: ['baker','baker','cashier','cashier','waiter','manager'],
     }
     role_pool = role_weights_by_day[day <= 10]
 
@@ -994,16 +1021,15 @@ def _generate_hire_pool():
         bake_speed    = random.randint(star, min(star + 1, 5))
         service_speed = random.randint(star, min(star + 1, 5))
 
-        # Salary from new ranges
         ranges  = SALARY_RANGES.get(role, SALARY_RANGES['baker'])[star]
         salary  = random.randint(ranges[2], ranges[3])
         hire_c  = random.randint(ranges[0], ranges[1])
 
-        # Legendary/Epic skills increase cost
-        rarity_premium = {'standard':1.0,'rare':1.15,'epic':1.35,'legendary':1.60,'unique':2.0}
-        hire_c  = round(hire_c * rarity_premium.get(skill_rarity, 1.0))
+        # Issue 5: stronger rarity cost premium
+        hire_c  = round(hire_c * RARITY_COST_PREMIUM.get(skill_rarity, 1.0))
 
         HireableWorker.objects.create(
+            game_state=state,
             name=name, role=role, skill_level=star,
             bake_speed=bake_speed, service_speed=service_speed,
             skill_id=skill_id, skill_rarity=skill_rarity,
@@ -1014,43 +1040,46 @@ def _generate_hire_pool():
 
 
 def refresh_hire_pool():
-    state = GameState.get()
+    state = _state()
     day   = state.day
     if state.pool_refreshed_day >= day:
         return
-    HireableWorker.objects.filter(is_hired=False, expires_on_day__lte=day).delete()
+    HireableWorker.objects.filter(game_state=state, is_hired=False, expires_on_day__lte=day).delete()
     _generate_hire_pool()
     state.pool_refreshed_day = day
     state.save(update_fields=['pool_refreshed_day'])
 
 
 def get_hire_pool(day):
+    state = _state()
     return list(HireableWorker.objects
-                .filter(is_hired=False, expires_on_day__gt=day)
+                .filter(game_state=state, is_hired=False, expires_on_day__gt=day)
                 .order_by('skill_level', 'role'))
 
 
 def hire_from_pool(hw_id):
-    hw = validate_hireable_worker(hw_id)
+    hw    = validate_hireable_worker(hw_id)
+    state = _state()
     with transaction.atomic():
         hw    = HireableWorker.objects.select_for_update().get(pk=hw.pk)
         if hw.is_hired:
             raise ValueError("Already hired by someone else.")
-        state = GameState.objects.select_for_update().get(pk=1)
-        if float(state.money) < float(hw.hire_cost):
+        s = GameState.objects.select_for_update().get(pk=state.pk)
+        if float(s.money) < float(hw.hire_cost):
             raise ValueError(
-                f"Need ${float(hw.hire_cost):.2f}, have ${float(state.money):.2f}.")
+                f"Need ${float(hw.hire_cost):.2f}, have ${float(s.money):.2f}.")
 
         worker = Worker.objects.create(
+            game_state=state,
             name=hw.name, role=hw.role, skill_level=hw.skill_level,
             bake_speed=hw.bake_speed, service_speed=hw.service_speed,
             skill_id=hw.skill_id, skill_rarity=hw.skill_rarity,
-            salary_per_day=hw.salary_per_day, hired_on_day=state.day,
+            salary_per_day=hw.salary_per_day, hired_on_day=s.day,
         )
         hw.is_hired = True
         hw.save(update_fields=['is_hired'])
-        state.money -= hw.hire_cost
-        state.save(update_fields=['money'])
+        s.money -= hw.hire_cost
+        s.save(update_fields=['money'])
 
     log_event('👋', f'Hired {worker.name} ({worker.role}, ★{worker.skill_level})!',
               log_type='success')
@@ -1075,36 +1104,39 @@ def fire_worker(worker_id):
 
 def buy_oven(tier):
     validate_oven_tier(tier)
-    cfg = OVEN_CATALOG[tier]
+    cfg   = OVEN_CATALOG[tier]
+    state = _state()
     with transaction.atomic():
-        state = GameState.objects.select_for_update().get(pk=1)
-        if float(state.money) < cfg['cost']:
-            raise ValueError(f"Need ${cfg['cost']}, have ${float(state.money):.2f}.")
-        n    = Oven.objects.filter(is_active=True).count() + 1
+        s = GameState.objects.select_for_update().get(pk=state.pk)
+        if float(s.money) < cfg['cost']:
+            raise ValueError(f"Need ${cfg['cost']}, have ${float(s.money):.2f}.")
+        n    = Oven.objects.filter(game_state=state, is_active=True).count() + 1
         oven = Oven.objects.create(
+            game_state=state,
             name=f"{cfg['name']} #{n}", tier=cfg['tier'],
-            speed_bonus=cfg['speed_bonus'], purchased_on_day=state.day,
+            speed_bonus=cfg['speed_bonus'], purchased_on_day=s.day,
             cost=D(cfg['cost']))
-        state.money -= D(cfg['cost'])
-        state.save(update_fields=['money'])
+        s.money -= D(cfg['cost'])
+        s.save(update_fields=['money'])
     log_event('🔥', f'Purchased {oven.name}!', log_type='success')
     return {'ok': True, 'message': f'Purchased {oven.name}!', 'oven': oven.to_dict()}
 
 
 def buy_upgrade(uid):
     validate_upgrade(uid)
-    cfg = KITCHEN_UPGRADES[uid]
+    cfg   = KITCHEN_UPGRADES[uid]
+    state = _state()
     with transaction.atomic():
-        state = GameState.objects.select_for_update().get(pk=1)
-        if state.has_upgrade(uid):
+        s = GameState.objects.select_for_update().get(pk=state.pk)
+        if s.has_upgrade(uid):
             raise ValueError(f"Already owned: {cfg['name']}.")
-        if float(state.money) < cfg['cost']:
+        if float(s.money) < cfg['cost']:
             raise ValueError(f"Need ${cfg['cost']} for {cfg['name']}.")
-        owned = list(state.owned_upgrades or [])
+        owned = list(s.owned_upgrades or [])
         owned.append(uid)
-        state.owned_upgrades = owned
-        state.money         -= D(cfg['cost'])
-        state.save(update_fields=['owned_upgrades', 'money'])
+        s.owned_upgrades = owned
+        s.money         -= D(cfg['cost'])
+        s.save(update_fields=['owned_upgrades', 'money'])
     log_event(cfg['emoji'], f"Purchased: {cfg['name']}!", log_type='success')
     return {'ok': True, 'message': f"Purchased {cfg['name']}!", 'upgrade_id': uid}
 
@@ -1149,19 +1181,20 @@ def set_worker_mode(worker_id, work_mode=None, target_recipe_id=None):
 # ══════════════════════════════════════════════════════════════════
 
 def end_day():
+    state = _state()
     with transaction.atomic():
-        state = GameState.objects.select_for_update().get(pk=1)
-        if not state.is_open:
+        s = GameState.objects.select_for_update().get(pk=state.pk)
+        if not s.is_open:
             raise ValueError('The store is not open.')
 
-        opening_balance = float(state.money)
-        day = state.day
+        opening_balance = float(s.money)
+        day = s.day
 
-        pending       = CustomerOrder.objects.filter(day_placed=day, status='pending')
+        pending       = CustomerOrder.objects.filter(game_state=s, day_placed=day, status='pending')
         expired_count = pending.count()
         pending.update(status='expired')
 
-        fulfilled_qs    = CustomerOrder.objects.filter(day_placed=day, status='fulfilled')
+        fulfilled_qs    = CustomerOrder.objects.filter(game_state=s, day_placed=day, status='fulfilled')
         fulfilled_count = fulfilled_qs.count()
         revenue         = float(fulfilled_qs.aggregate(total=Sum('revenue'))['total'] or 0)
         tips            = float(fulfilled_qs.aggregate(total=Sum('tip'))['total'] or 0)
@@ -1173,16 +1206,16 @@ def end_day():
             best_seller = bs[0]
             best_count  = bs[1]
 
-        workers  = list(Worker.objects.filter(is_active=True))
+        workers  = list(Worker.objects.filter(game_state=s, is_active=True))
         salaries = round(sum(float(w.salary_per_day) for w in workers), 2)
-        state.money -= D(salaries)
+        s.money -= D(salaries)
 
         ingredient_costs = float(
-            BakedCake.objects.filter(day_baked=day)
+            BakedCake.objects.filter(game_state=s, day_baked=day)
             .aggregate(total=Sum('ingredient_cost'))['total'] or 0)
 
         leftover = list(BakedCake.objects
-                        .filter(day_baked=day, is_baking=False, remaining_slices__gt=0)
+                        .filter(game_state=s, day_baked=day, is_baking=False, remaining_slices__gt=0)
                         .select_related('recipe'))
         waste_cost = round(
             sum(float(c.ingredient_cost) * (c.remaining_slices / c.total_slices)
@@ -1191,16 +1224,16 @@ def end_day():
             c.remaining_slices = 0
             c.save(update_fields=['remaining_slices'])
 
-        baked_count  = BakedCake.objects.filter(day_baked=day).count()
+        baked_count  = BakedCake.objects.filter(game_state=s, day_baked=day).count()
         total_orders = fulfilled_count + expired_count
         satisfaction = round(
             (fulfilled_count / total_orders * 100) if total_orders else 50.0, 1)
-        rep_delta    = int((satisfaction - state.reputation) * 0.12)
-        state.reputation = max(0, min(100, state.reputation + rep_delta))
+        rep_delta    = int((satisfaction - s.reputation) * 0.12)
+        s.reputation = max(0, min(100, s.reputation + rep_delta))
 
         net_profit      = round(revenue + tips - salaries - waste_cost, 2)
         closing_balance = round(opening_balance + net_profit, 2)
-        state.money     = D(closing_balance)
+        s.money         = D(closing_balance)
 
         worker_notes = []
         for w in workers:
@@ -1211,13 +1244,14 @@ def end_day():
                     note += f" [{sk['name']}]"
                 worker_notes.append(note)
 
-        state.briefing_data = {
+        s.briefing_data = {
             'day': day, 'net_profit': net_profit,
             'best_seller': best_seller, 'best_count': best_count,
             'worker_notes': worker_notes[:4],
         }
 
         report = DayReport.objects.create(
+            game_state=s,
             day=day, revenue=D(revenue), worker_salaries=D(salaries),
             ingredient_costs=D(ingredient_costs), waste_cost=D(waste_cost),
             net_profit=D(net_profit), orders_fulfilled=fulfilled_count,
@@ -1227,17 +1261,18 @@ def end_day():
             best_seller=best_seller, best_seller_count=best_count or 0,
         )
 
-        state.is_open             = False
-        state.day                += 1
-        state.day_started_at      = None
-        state.next_order_at       = None
-        state.active_event        = None
-        state.event_counter       = 0
-        state.rush_ends_at        = None
-        state.critic_fresh_served = 0
-        state.todays_guest_id     = None
-        state.course_discount_active = False
-        state.save()
+        s.is_open             = False
+        s.day                += 1
+        s.day_started_at      = None
+        s.day_end_at          = None
+        s.next_order_at       = None
+        s.active_event        = None
+        s.event_counter       = 0
+        s.rush_ends_at        = None
+        s.critic_fresh_served = 0
+        s.todays_guest_id     = None
+        s.course_discount_active = False
+        s.save()
 
     refresh_hire_pool()
     check_recipe_unlocks()
@@ -1257,83 +1292,88 @@ def end_day():
 # ══════════════════════════════════════════════════════════════════
 
 def open_store():
-    with transaction.atomic():
-        state = GameState.objects.select_for_update().get(pk=1)
-        if not state.game_started:
-            raise ValueError('Start a game first.')
-        if state.is_open:
-            raise ValueError('Store is already open.')
-        state.is_open        = True
-        state.day_started_at = timezone.now()
-        state.next_order_at  = timezone.now()
-        state.save(update_fields=['is_open', 'day_started_at', 'next_order_at'])
+    state = _state()
+    day_duration = getattr(settings, 'DEFAULT_DAY_DURATION_SECONDS', 300)
 
-    state = GameState.get()
+    with transaction.atomic():
+        s = GameState.objects.select_for_update().get(pk=state.pk)
+        if not s.game_started:
+            raise ValueError('Start a game first.')
+        if s.is_open:
+            raise ValueError('Store is already open.')
+        now = timezone.now()
+        s.is_open        = True
+        s.day_started_at = now
+        s.next_order_at  = now
+        s.day_end_at     = now + timedelta(seconds=day_duration)  # Issue 8
+        s.save(update_fields=['is_open', 'day_started_at', 'next_order_at', 'day_end_at'])
+
+    state = _state()
     event = roll_daily_event(state)
     return {
         'ok':           True,
-        'message':      f'Store is open! Day {state.day} begins.',
+        'message':      f'Store is open! Day {state.day} begins. You have {day_duration//60} min.',
         'active_event': event,
+        'day_end_at':   state.day_end_at.isoformat() if state.day_end_at else None,
     }
 
 
 def get_briefing():
-    state = GameState.get()
+    state = _state()
     return {
         'ok':            True,
         'briefing':      state.briefing_data,
         'day':           state.day,
         'hire_pool_count': HireableWorker.objects.filter(
-            is_hired=False, expires_on_day__gt=state.day).count(),
+            game_state=state, is_hired=False, expires_on_day__gt=state.day).count(),
     }
 
 
 def start_game(store_name, confirmed=False):
-    existing = GameState.get()
-    if existing.game_started and not confirmed:
+    state = _state()
+    if state.game_started and not confirmed:
         return {
             'ok': False, 'needs_confirm': True,
-            'message': (f'"{existing.store_name}" is already running '
-                        f'(Day {existing.day}). Confirm to start over.'),
+            'message': (f'"{state.store_name}" is already running '
+                        f'(Day {state.day}). Confirm to start over.'),
         }
 
     with transaction.atomic():
-        BakedCake.objects.all().delete()
-        CustomerOrder.objects.all().delete()
-        DayReport.objects.all().delete()
-        Worker.objects.all().delete()
-        HireableWorker.objects.all().delete()
-        EventLog.objects.all().delete()
-        Oven.objects.filter(pk__gt=1).delete()
+        BakedCake.objects.filter(game_state=state).delete()
+        CustomerOrder.objects.filter(game_state=state).delete()
+        DayReport.objects.filter(game_state=state).delete()
+        Worker.objects.filter(game_state=state).delete()
+        HireableWorker.objects.filter(game_state=state).delete()
+        EventLog.objects.filter(game_state=state).delete()
+        Oven.objects.filter(game_state=state).delete()
 
-        starter, _ = Oven.objects.get_or_create(pk=1, defaults={
-            'name':'Starter Oven','tier':'basic','speed_bonus':1.0,
-            'is_active':True,'purchased_on_day':1,'cost':D(0)})
-        starter.name='Starter Oven'; starter.tier='basic'
-        starter.speed_bonus=1.0; starter.is_active=True
-        starter.save()
+        starter = Oven.objects.create(
+            game_state=state,
+            name='Starter Oven', tier='basic', speed_bonus=1.0,
+            is_active=True, purchased_on_day=1, cost=D(0))
 
-        state = GameState.get()
-        state.store_name             = (store_name or 'Sweet Layers').strip()[:100]
-        state.day                    = 1
-        state.money                  = D(500)
-        state.reputation             = 50
-        state.is_open                = False
-        state.game_started           = True
-        state.day_started_at         = None
-        state.next_order_at          = None
-        state.total_revenue          = D(0)
-        state.total_fulfilled        = 0
-        state.pool_refreshed_day     = 0
-        state.active_event           = None
-        state.event_counter          = 0
-        state.owned_upgrades         = []
-        state.briefing_data          = None
-        state.rush_ends_at           = None
-        state.critic_fresh_served    = 0
-        state.todays_guest_id        = None
-        state.course_discount_active = False
-        state.save()
+        s = GameState.objects.select_for_update().get(pk=state.pk)
+        s.store_name             = (store_name or 'Sweet Layers').strip()[:100]
+        s.day                    = 1
+        s.money                  = D(500)
+        s.reputation             = 50
+        s.is_open                = False
+        s.game_started           = True
+        s.day_started_at         = None
+        s.day_end_at             = None
+        s.next_order_at          = None
+        s.total_revenue          = D(0)
+        s.total_fulfilled        = 0
+        s.pool_refreshed_day     = 0
+        s.active_event           = None
+        s.event_counter          = 0
+        s.owned_upgrades         = []
+        s.briefing_data          = None
+        s.rush_ends_at           = None
+        s.critic_fresh_served    = 0
+        s.todays_guest_id        = None
+        s.course_discount_active = False
+        s.save()
 
     refresh_hire_pool()
     global _last_tick_time
@@ -1346,30 +1386,30 @@ def start_game(store_name, confirmed=False):
 # ══════════════════════════════════════════════════════════════════
 
 def get_full_state():
-    state       = GameState.get()
+    state       = _state()
     current_day = state.day
 
     ovens     = [o.to_dict() for o in
-                 Oven.objects.filter(is_active=True)
+                 Oven.objects.filter(game_state=state, is_active=True)
                              .prefetch_related('assigned_workers','cakes')]
-    workers   = [w.to_dict() for w in Worker.objects.filter(is_active=True)]
+    workers   = [w.to_dict() for w in Worker.objects.filter(game_state=state, is_active=True)]
     inventory = [c.to_dict(current_day, state) for c in
                  BakedCake.objects
-                           .filter(is_baking=False, remaining_slices__gt=0,
+                           .filter(game_state=state, is_baking=False, remaining_slices__gt=0,
                                    day_baked__gte=current_day-1)
                            .select_related('recipe')
                            .order_by('remaining_slices','baked_time')]
     baking    = [c.to_dict(current_day, state) for c in
-                 BakedCake.objects.filter(is_baking=True).select_related('recipe')]
+                 BakedCake.objects.filter(game_state=state, is_baking=True).select_related('recipe')]
     orders    = [o.to_dict(state) for o in
                  CustomerOrder.objects
-                               .filter(status='pending')
+                               .filter(game_state=state, status='pending')
                                .select_related('recipe')
                                .order_by('expires_at')]
     recipes   = [r.to_dict(state) for r in CakeRecipe.objects.all().order_by('pk')]
-    reports   = [r.to_dict() for r in DayReport.objects.all()[:7]]
+    reports   = [r.to_dict() for r in DayReport.objects.filter(game_state=state)[:7]]
     hire_pool = [hw.to_dict() for hw in get_hire_pool(current_day)]
-    event_log = [e.to_dict() for e in EventLog.objects.all()[:30]]
+    event_log = [e.to_dict() for e in EventLog.objects.filter(game_state=state)[:30]]
 
     upgrades = [
         {'id':uid,'name':ucfg['name'],'emoji':ucfg['emoji'],
@@ -1377,7 +1417,6 @@ def get_full_state():
         for uid, ucfg in KITCHEN_UPGRADES.items()
     ]
 
-    # Course costs (with possible discount)
     course_costs = {}
     for (fr, to), cfg in COURSE_CONFIG.items():
         cost = round(cfg['cost'] * (0.70 if state.course_discount_active else 1.0))
