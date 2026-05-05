@@ -60,3 +60,11 @@ STATIC_URL = '/static/'
 STATICFILES_DIRS = [BASE_DIR / 'static']
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# Auth
+LOGIN_URL = '/login/'
+LOGIN_REDIRECT_URL = '/'
+LOGOUT_REDIRECT_URL = '/login/'
+
+# Day length (seconds) — used as default when store opens
+DEFAULT_DAY_DURATION_SECONDS = 5 * 60  # 5 minutes

@@ -10,6 +10,8 @@
 <body>
 
 <!-- ── START ─────────────────────────────────────────────────────────────── -->
+<!-- Issue 6: start screen is purely for naming the store; auth handles identity.
+     It shows when game_started=false. On page load JS checks state first. -->
 <div id="screen-start" class="screen">
   <div class="start-logo">🎂</div>
   <h1 class="start-title">Cake Store Manager</h1>
@@ -24,6 +26,9 @@
   <div style="color:var(--muted);font-size:0.78rem;max-width:380px;text-align:center;line-height:1.8;margin-top:1rem">
     Hire bakers · Buy ovens · Unlock recipes · Fulfill orders · Grow reputation
   </div>
+  <a href="{% url 'logout' %}" style="margin-top:1.5rem;color:var(--muted);font-size:0.78rem;text-decoration:none">
+    Signed in as <strong>{{ username }}</strong> · Log out
+  </a>
 </div>
 
 <!-- ── MORNING BRIEFING ──────────────────────────────────────────────────── -->
@@ -49,21 +54,35 @@
         <span class="value" id="tb-day">1</span>
       </div>
       <div class="stat-chip money">
-        <span class="label" data-tip="Your cash — goes negative if you overspend">💰</span>
+        <span class="label" data-tip="Your cash">💰</span>
         <span class="value" id="tb-money">$0.00</span>
       </div>
       <div class="stat-chip rep">
-        <span class="label" data-tip="Reputation — affects order speed, pricing, and which customers visit">⭐</span>
+        <span class="label" data-tip="Reputation — affects orders, pricing, customers">⭐</span>
         <span class="value" id="tb-rep-val">50/100</span>
         <div class="rep-bar" style="width:50px">
           <div class="rep-fill" id="tb-rep-fill" style="width:50%"></div>
         </div>
         <span id="tb-tier" style="font-size:0.65rem"></span>
       </div>
+      <!-- Issue 8: day timer chip -->
+      <div class="stat-chip day-timer" id="day-timer-chip" style="display:none"
+           data-tip="Time left in today's trading — store auto-closes when it hits 0">
+        <span class="label">⏰</span>
+        <span class="value" id="tb-day-timer">5:00</span>
+        <div class="rep-bar" style="width:44px">
+          <div class="rep-fill" id="tb-day-timer-fill" style="width:100%;background:var(--green)"></div>
+        </div>
+      </div>
     </div>
     <div class="topbar-actions">
+      <!-- user badge -->
+      <span class="user-badge" data-tip="Signed in as {{ username }}">
+        👤 {{ username }}
+      </span>
+      <a href="{% url 'logout' %}" class="btn btn-secondary btn-sm" data-tip="Log out">Logout</a>
       <div class="notif-btn" onclick="toggleNotifications()"
-           data-tip="Activity log — see what workers are doing">
+           data-tip="Activity log">
         🔔<div class="notif-badge" id="notif-badge"></div>
       </div>
       <button id="btn-open-store" class="btn btn-success btn-sm"
@@ -86,21 +105,17 @@
     <div class="panel">
       <div id="left-tabs" class="tab-bar">
         <button class="tab-btn active" data-tab="tab-ovens"
-                data-tip="Your ovens — assign bakers and start baking"
                 onclick="switchTab('left-tabs','tab-ovens')">🔥 Ovens</button>
         <button class="tab-btn" data-tab="tab-baking"
-                data-tip="Cakes currently baking"
                 onclick="switchTab('left-tabs','tab-baking')">⏳ Baking</button>
         <button class="tab-btn" data-tab="tab-recipes"
-                data-tip="Buy new recipes from the shop"
                 onclick="switchTab('left-tabs','tab-recipes')">📖 Recipes</button>
       </div>
       <div id="tab-ovens"   class="tab-content active"><div id="panel-ovens"></div></div>
       <div id="tab-baking"  class="tab-content"><div id="panel-baking"></div></div>
       <div id="tab-recipes" class="tab-content">
-        <div id="panel-recipe-shop" style="padding:0.5rem;display:flex;flex-direction:column;gap:0.5rem">
-          <div class="empty-state"><div class="empty-icon">📖</div>Loading recipes…</div>
-        </div>
+        <!-- Issue 2: panel starts empty, renderRecipeShop fills it after G loads -->
+        <div id="panel-recipe-shop" style="padding:0.5rem;display:flex;flex-direction:column;gap:0.5rem"></div>
       </div>
     </div>
 
@@ -108,10 +123,8 @@
     <div class="panel">
       <div id="centre-tabs" class="tab-bar">
         <button class="tab-btn active" data-tab="tab-inventory"
-                data-tip="Cakes on the shelf ready to sell"
                 onclick="switchTab('centre-tabs','tab-inventory')">🍰 Shelf</button>
         <button class="tab-btn" data-tab="tab-orders"
-                data-tip="Pending customer orders — fulfill before the timer runs out"
                 onclick="switchTab('centre-tabs','tab-orders')">🛎 Orders</button>
       </div>
       <div id="tab-inventory" class="tab-content active"><div id="panel-inventory"></div></div>
@@ -122,25 +135,19 @@
     <div class="panel">
       <div id="right-tabs" class="tab-bar">
         <button class="tab-btn active" data-tab="tab-staff"
-                data-tip="Manage hired staff — set work modes, assign ovens, send on courses"
                 onclick="switchTab('right-tabs','tab-staff')">👥 Staff</button>
         <button class="tab-btn" data-tab="tab-ovenshop"
-                data-tip="Buy more ovens to bake multiple cakes simultaneously"
                 onclick="switchTab('right-tabs','tab-ovenshop')">🔥 Ovens</button>
         <button class="tab-btn" data-tab="tab-upgrades"
-                data-tip="One-time kitchen upgrades that permanently improve your store"
                 onclick="switchTab('right-tabs','tab-upgrades')">✨ Upgrades</button>
         <button class="tab-btn" data-tab="tab-history"
-                data-tip="Day-by-day performance history"
                 onclick="switchTab('right-tabs','tab-history')">📊 History</button>
       </div>
 
-      <!-- Staff tab -->
       <div id="tab-staff" class="tab-content active">
         <div id="panel-staff"></div>
       </div>
 
-      <!-- Oven shop tab -->
       <div id="tab-ovenshop" class="tab-content">
         <div style="padding:0.75rem;display:flex;flex-direction:column;gap:0.6rem">
           <div class="shop-item">
@@ -148,9 +155,7 @@
             <div class="shop-item-desc">Speed ×1.0 — standard baking</div>
             <div style="display:flex;align-items:center;justify-content:space-between">
               <span class="shop-item-cost">$200</span>
-              <button class="btn btn-info btn-sm"
-                      data-tip="Adds one more baking slot at standard speed"
-                      onclick="buyOven('basic')">Buy</button>
+              <button class="btn btn-info btn-sm" onclick="buyOven('basic')">Buy</button>
             </div>
           </div>
           <div class="shop-item">
@@ -158,9 +163,7 @@
             <div class="shop-item-desc">Speed ×1.5 — 33% faster baking</div>
             <div style="display:flex;align-items:center;justify-content:space-between">
               <span class="shop-item-cost">$500</span>
-              <button class="btn btn-info btn-sm"
-                      data-tip="Bakes 33% faster than a Basic Oven"
-                      onclick="buyOven('pro')">Buy</button>
+              <button class="btn btn-info btn-sm" onclick="buyOven('pro')">Buy</button>
             </div>
           </div>
           <div class="shop-item">
@@ -168,20 +171,16 @@
             <div class="shop-item-desc">Speed ×2.2 — more than double speed</div>
             <div style="display:flex;align-items:center;justify-content:space-between">
               <span class="shop-item-cost">$1200</span>
-              <button class="btn btn-info btn-sm"
-                      data-tip="Bakes more than twice as fast — best for high-demand recipes"
-                      onclick="buyOven('industrial')">Buy</button>
+              <button class="btn btn-info btn-sm" onclick="buyOven('industrial')">Buy</button>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- Upgrades tab -->
       <div id="tab-upgrades" class="tab-content">
         <div id="panel-upgrades" style="padding:0.75rem;display:flex;flex-direction:column;gap:0.6rem"></div>
       </div>
 
-      <!-- History tab -->
       <div id="tab-history" class="tab-content">
         <div id="panel-history"></div>
       </div>
@@ -205,7 +204,11 @@
   <div class="modal">
     <div class="modal-title" id="bake-modal-title">🔥 Bake a Cake</div>
     <div class="modal-body">
-      <div class="form-group">
+      <!-- Issue 1: fallback message when no recipes unlocked -->
+      <div id="bake-no-recipes" style="display:none;color:var(--muted);font-size:0.85rem;padding:0.5rem 0">
+        ⚠️ No recipes unlocked yet. Run <code>python manage.py seed_recipes</code> to add starter recipes.
+      </div>
+      <div class="form-group" id="bake-recipe-group">
         <label class="form-label">Recipe</label>
         <select id="bake-recipe-select" onchange="updateBakePreview()"></select>
       </div>
@@ -221,7 +224,8 @@
     </div>
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeBakeModal()">Cancel</button>
-      <button class="btn btn-warning" data-tip="Ingredient cost deducted immediately"
+      <button class="btn btn-warning" id="bake-confirm-btn"
+              data-tip="Ingredient cost deducted immediately"
               onclick="confirmBake()">🔥 Start Baking</button>
     </div>
   </div>
@@ -264,6 +268,13 @@
     </div>
     <div id="worker-detail-body" class="modal-body" style="max-height:72vh;overflow-y:auto"></div>
   </div>
+</div>
+
+<!-- Issue 8: auto-end notice -->
+<div id="day-ended-banner" style="display:none;position:fixed;top:0;left:0;right:0;
+  background:rgba(245,166,35,0.95);color:#000;text-align:center;padding:0.75rem;
+  font-weight:800;font-size:0.95rem;z-index:300">
+  ⏰ Day ended automatically — reviewing results…
 </div>
 
 <div id="toast-container"></div>

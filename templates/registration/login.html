@@ -1,0 +1,31 @@
+{% extends "registration/base_auth.html" %}
+{% block content %}
+<div class="auth-card">
+  <div class="auth-logo">🎂</div>
+  <div class="auth-title">Cake Store Manager</div>
+
+  {% if form.errors %}
+  <div class="errors">
+    <ul>{% for field in form %}{% for e in field.errors %}<li>{{ e }}</li>{% endfor %}{% endfor %}
+    {% for e in form.non_field_errors %}<li>{{ e }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+
+  <form method="post">
+    {% csrf_token %}
+    <div class="form-group">
+      <label for="id_username">Username</label>
+      <input type="text" name="username" id="id_username" autofocus autocomplete="username">
+    </div>
+    <div class="form-group">
+      <label for="id_password">Password</label>
+      <input type="password" name="password" id="id_password" autocomplete="current-password">
+    </div>
+    <input type="hidden" name="next" value="{{ next }}">
+    <button class="btn btn-primary" type="submit">🔓 Sign In</button>
+  </form>
+
+  <div class="divider">— or —</div>
+  <a href="{% url 'register' %}" class="btn btn-secondary">Create an account</a>
+</div>
+{% endblock %}

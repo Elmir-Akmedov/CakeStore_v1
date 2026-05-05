@@ -1,8 +1,11 @@
 /* ═══════════════════════════════════════════════════════════
-   CAKE STORE MANAGER — Phase 2
-   New: recipe shop with lock animations, waiter/manager
-        cards, skill rarity badges, course system UI,
-        Today's Guest order, bake time removed from cashiers
+   CAKE STORE MANAGER — Phase 2 + fixes
+   Fix 1: bake modal empty → fallback message when no recipes unlocked
+   Fix 2: recipes tab → renderRecipeShop waits for G to load
+   Fix 3: tooltip 250ms delay
+   Fix 4: history tab overflow handled in CSS (tab-btn flex nowrap)
+   Fix 6: start screen shown correctly (only when game_started=false)
+   Fix 8: day timer countdown + auto-ended detection
 ═══════════════════════════════════════════════════════════ */
 'use strict';
 
@@ -11,6 +14,10 @@ let pollTimer    = null;
 let animFrame    = null;
 let selectedOven = null;
 const lockedWorkers = new Set();
+
+// day-end ISO string for the timer
+let _dayEndAt = null;
+const DAY_DURATION_SEC = 5 * 60; // must match settings.DEFAULT_DAY_DURATION_SECONDS
 
 // ── CSRF ──────────────────────────────────────────────────────────────────────
 function getCsrf() {
@@ -51,7 +58,7 @@ function switchTab(groupId, tabId) {
     c.classList.toggle('active', c.id === tabId));
 }
 
-// ── Tooltip ───────────────────────────────────────────────────────────────────
+// ── Tooltip (Fix 3: 250ms delay) ─────────────────────────────────────────────
 (() => {
   const el = document.createElement('div');
   el.id = 'custom-tooltip';
@@ -60,20 +67,35 @@ function switchTab(groupId, tabId) {
     padding:0.4rem 0.65rem;border-radius:6px;border:1px solid #2a2a4a;
     box-shadow:0 4px 16px rgba(0,0,0,0.5);max-width:240px;white-space:normal;`;
   document.addEventListener('DOMContentLoaded', () => document.body.appendChild(el));
-  let mx=0,my=0;
-  document.addEventListener('mousemove', e => { mx=e.clientX;my=e.clientY; if(el.style.display==='block')pos(); });
+
+  let mx=0, my=0, showTimer=null;
+
+  document.addEventListener('mousemove', e => {
+    mx=e.clientX; my=e.clientY;
+    if (el.style.display==='block') pos();
+  });
+
   function pos() {
     const r=el.getBoundingClientRect();
-    el.style.left=(mx+12+r.width>window.innerWidth?mx-r.width-8:mx+12)+'px';
-    el.style.top =(my+12+r.height>window.innerHeight?my-r.height-8:my+12)+'px';
+    el.style.left=(mx+12+r.width>window.innerWidth ? mx-r.width-8 : mx+12)+'px';
+    el.style.top =(my+12+r.height>window.innerHeight ? my-r.height-8 : my+12)+'px';
   }
-  document.addEventListener('mouseover',e=>{
-    const t=e.target.closest('[data-tip]');
-    if(!t){el.style.display='none';return;}
-    el.textContent=t.dataset.tip; el.style.display='block'; pos();
+
+  document.addEventListener('mouseover', e => {
+    const t = e.target.closest('[data-tip]');
+    if (!t) return;
+    clearTimeout(showTimer);
+    showTimer = setTimeout(() => {
+      el.textContent = t.dataset.tip;
+      el.style.display = 'block';
+      pos();
+    }, 250);
   });
-  document.addEventListener('mouseout',e=>{
-    if(!e.target.closest('[data-tip]'))return; el.style.display='none';
+
+  document.addEventListener('mouseout', e => {
+    if (!e.target.closest('[data-tip]')) return;
+    clearTimeout(showTimer);
+    el.style.display = 'none';
   });
 })();
 
@@ -106,6 +128,29 @@ function startAnimationLoop() {
       if(bar) bar.style.width=`${pct}%`;
       if(sec) sec.textContent=`${Math.ceil(s)}s`;
     });
+
+    // Issue 8: day timer countdown
+    if (_dayEndAt && G.state?.is_open) {
+      const secs = secsFrom(_dayEndAt);
+      const chip = $('day-timer-chip');
+      const timerEl = $('tb-day-timer');
+      const fill = $('tb-day-timer-fill');
+      if (chip) chip.style.display = 'flex';
+      if (timerEl) {
+        const m = Math.floor(secs / 60);
+        const s2 = Math.floor(secs % 60);
+        timerEl.textContent = `${m}:${String(s2).padStart(2,'0')}`;
+      }
+      if (fill) {
+        const pct = clamp(secs / DAY_DURATION_SEC * 100, 0, 100);
+        fill.style.width = `${pct}%`;
+        fill.style.background = secs > 60 ? 'var(--green)' : secs > 20 ? 'var(--accent2)' : 'var(--accent)';
+      }
+    } else {
+      const chip = $('day-timer-chip');
+      if (chip) chip.style.display = 'none';
+    }
+
     animFrame = requestAnimationFrame(loop);
   }
   loop();
@@ -122,15 +167,31 @@ function startPolling() {
 async function poll() {
   try {
     const tick  = await api('/api/tick/', {});
+    // Issue 8: detect auto-end
+    if (tick.events?.auto_ended) {
+      $('day-ended-banner').style.display = 'block';
+      setTimeout(() => {
+        $('day-ended-banner').style.display = 'none';
+        showReport(tick.events.report);
+      }, 1800);
+      return;
+    }
     handleEvents(tick.events);
     const state = await api('/api/state/');
     G = state;
+    // sync day timer
+    if (G.state?.day_end_at) _dayEndAt = G.state.day_end_at;
+    else _dayEndAt = null;
     render();
   } catch(e) { console.error('Poll error',e); }
 }
 
 async function fetchState() {
-  try { G = await api('/api/state/'); render(); }
+  try {
+    G = await api('/api/state/');
+    if (G.state?.day_end_at) _dayEndAt = G.state.day_end_at;
+    render();
+  }
   catch(e) { console.error(e); }
 }
 
@@ -152,7 +213,7 @@ function handleEvents(events) {
     const o=events.new_order;
     const d=o.quantity?`${o.quantity} whole`:`${o.pieces} slice(s)`;
     const i=o.order_type==='urgent'?'🔥':o.order_type==='bulk'?'📦':'🛎';
-    const special=o.is_todays?' 👑 TODAY\'S GUEST':'';
+    const special=o.is_todays?" 👑 TODAY'S GUEST":'';
     toast(`${i}${o.customer_icon||''} ${o.customer_name}${special} — ${d} of ${o.recipe_name}`,'info');
   }
 }
@@ -167,7 +228,7 @@ function render() {
   renderOrders();
   renderStaff();
   renderUpgrades();
-  renderRecipeShop();
+  renderRecipeShop();   // Issue 2: called after G is populated
   renderReportsTab();
   renderNotificationBadge();
 }
@@ -201,7 +262,7 @@ function renderEventBanner() {
       ?`<span class="event-counter">${G.state.event_counter}/${event.id==='blogger'?5:10}</span>`:''}`;
 }
 
-// ── Ovens (smart diff) ────────────────────────────────────────────────────────
+// ── Ovens ─────────────────────────────────────────────────────────────────────
 function renderOvens() {
   const el=$('panel-ovens');
   if (!G.ovens?.length) {
@@ -214,26 +275,26 @@ function renderOvens() {
   G.ovens.forEach(ov => {
     const cake=ov.current_cake, baker=ov.baker;
     const bakerHtml=baker
-      ? `<div class="oven-status" data-tip="Baker assigned — reduces bake time">👨‍🍳 ${baker.name} <span style="color:var(--muted);font-size:0.72rem">Lv.${baker.level}</span></div>`
-      : `<div class="oven-status" style="color:var(--accent)" data-tip="No baker — no bake time reduction">No baker assigned</div>`;
+      ? `<div class="oven-status">👨‍🍳 ${baker.name} <span style="color:var(--muted);font-size:0.72rem">Lv.${baker.level}</span></div>`
+      : `<div class="oven-status" style="color:var(--accent)">No baker assigned</div>`;
     const innerHtml=ov.is_busy&&cake
       ? `<div class="oven-status">${cake.emoji} ${cake.recipe_name} (${cake.size}) — <span id="osec2-${ov.id}">${Math.ceil(secsFrom(cake.bake_finish_at))}s</span></div>
          <div class="progress-bar"><div class="progress-fill" id="oprog-${ov.id}" style="width:${cake.progress_pct}%;transition:width 0.5s linear"></div></div>`
-      : `<div class="oven-status" style="color:var(--green)" data-tip="Ready — click Bake to start">Ready to bake</div>`;
+      : `<div class="oven-status" style="color:var(--green)">Ready to bake</div>`;
 
     if (!existing.has(ov.id)) {
       const card=document.createElement('div');
       card.id=`oven-card-${ov.id}`; card.dataset.ovenId=ov.id;
       card.className=`oven-card ${ov.is_busy?'busy':'free'}`;
       card.innerHTML=`
-        <div class="oven-title" data-tip="${ov.tier} oven ×${ov.speed_bonus} speed">
+        <div class="oven-title">
           🔥 ${ov.name} <span class="oven-badge ${ov.tier}">${ov.tier}</span>
           <span style="color:var(--muted);font-size:0.75rem">×${ov.speed_bonus}</span>
         </div>
         <div class="oven-baker-line">${bakerHtml}</div>
         <div class="oven-inner">${innerHtml}</div>
         <div class="oven-actions">
-          ${!ov.is_busy?`<button class="btn btn-warning btn-sm" data-tip="Bake a cake in ${ov.name}" onclick="openBakeModal(${ov.id})">🍰 Bake</button>`:''}
+          ${!ov.is_busy?`<button class="btn btn-warning btn-sm" onclick="openBakeModal(${ov.id})">🍰 Bake</button>`:''}
         </div>`;
       el.appendChild(card);
     } else {
@@ -244,7 +305,7 @@ function renderOvens() {
       const actions=card.querySelector('.oven-actions');
       const hasBtn=!!actions?.querySelector('button');
       if(!ov.is_busy&&!hasBtn&&actions)
-        actions.innerHTML=`<button class="btn btn-warning btn-sm" data-tip="Bake a cake in ${ov.name}" onclick="openBakeModal(${ov.id})">🍰 Bake</button>`;
+        actions.innerHTML=`<button class="btn btn-warning btn-sm" onclick="openBakeModal(${ov.id})">🍰 Bake</button>`;
       else if(ov.is_busy&&hasBtn&&actions) actions.innerHTML='';
     }
   });
@@ -275,8 +336,8 @@ function renderInventory() {
   G.inventory.forEach(c=>{
     const dots=Array.from({length:c.total_slices},(_,i)=>`<div class="slice-dot ${i<c.remaining_slices?'used':''}"></div>`).join('');
     const freshLabel=c.is_fresh
-      ?`<span style="font-size:0.7rem;color:var(--green)" data-tip="Fresh — baked today">✨ Fresh</span>`
-      :`<span style="font-size:0.7rem;color:var(--muted)" data-tip="Stale — baked previously">🕒 Stale</span>`;
+      ?`<span style="font-size:0.7rem;color:var(--green)">✨ Fresh</span>`
+      :`<span style="font-size:0.7rem;color:var(--muted)">🕒 Stale</span>`;
     const html=`<span class="inv-emoji">${c.emoji}</span>
       <div class="inv-info">
         <div class="inv-name">${c.recipe_name}</div>
@@ -317,19 +378,10 @@ function buildOrderCard(o) {
   const desc=o.quantity?`${o.quantity} whole cake${o.quantity>1?'s':''}`:`${o.pieces} slice(s)`;
   const isTodays=o.is_todays||o.customer_type==='todays';
   const typeTag=o.order_type==='urgent'
-    ?`<span class="order-type-tag urgent" data-tip="Urgent — pays ×1.5, expires fast">🔥 URGENT</span>`
-    :o.order_type==='bulk'?`<span class="order-type-tag bulk" data-tip="Bulk — pays ×1.2">📦 BULK</span>`:'';
-  const todaysTag=isTodays?`<span class="order-type-tag todays" data-tip="Today's Guest — serve perfectly for ×3 reputation!">👑 TODAY'S GUEST</span>`:'';
-  const ctipMap={
-    standard:'Regular customer',impatient:'Impatient — expires fast, pays 20% more',
-    patient:'Patient — plenty of time',picky:'Picky — MUST be fresh',
-    bulk_buyer:'Bulk buyer',vip:"VIP — pays ×2, tips generously. Don't fail them!",
-    regular:'Regular — returns daily, tips if consistent',
-    inspector:'Inspector — stale cake = −15 reputation',
-    critic:'Critic — can post bad reviews',
-    todays:"Today's Guest — ×3 reputation on success OR failure!",
-  };
-  const cicon=o.customer_icon?`<span class="ctype-icon" data-tip="${ctipMap[o.customer_type]||''}">${o.customer_icon}</span>`:'';
+    ?`<span class="order-type-tag urgent">🔥 URGENT</span>`
+    :o.order_type==='bulk'?`<span class="order-type-tag bulk">📦 BULK</span>`:'';
+  const todaysTag=isTodays?`<span class="order-type-tag todays">👑 TODAY'S GUEST</span>`:'';
+  const cicon=o.customer_icon?`<span class="ctype-icon">${o.customer_icon}</span>`:'';
 
   div.id=`order-card-${o.id}`; div.dataset.orderId=o.id;
   div.className=`order-card${isTodays?' todays-order':''}`;
@@ -340,23 +392,19 @@ function buildOrderCard(o) {
       <div class="order-info">
         <div class="order-customer">${cicon} ${o.customer_name} ${typeTag}${todaysTag}</div>
         <div class="order-detail">${desc} · ${o.recipe_name} (${o.size})</div>
-        ${o.want_fresh?'<div class="order-fresh" data-tip="Must be baked today">⭐ Wants fresh</div>':''}
+        ${o.want_fresh?'<div class="order-fresh">⭐ Wants fresh</div>':''}
         <div class="order-detail" id="osec-${o.id}">⏱ ${Math.ceil(secs)}s</div>
       </div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:0.4rem">
         <div class="order-revenue">${fmt(o.revenue)}</div>
-        <button class="btn btn-success btn-sm" data-tip="Serve ${o.customer_name}'s order"
+        <button class="btn btn-success btn-sm"
                 onclick="fulfillOrder(${o.id},this)">Fulfill ✓</button>
       </div>
     </div>`;
   return div;
 }
 
-// ═══════════════════════════════════════════════════════════
-//  STAFF PANEL
-//  Phase 2: waiter + manager cards, skill rarity badges,
-//  course button, bake UI hidden for cashiers
-// ═══════════════════════════════════════════════════════════
+// ── Staff ─────────────────────────────────────────────────────────────────────
 const AVATAR_COLORS=[
   ['#e94560','#fff'],['#f5a623','#000'],['#2ecc71','#000'],
   ['#3498db','#fff'],['#9b59b6','#fff'],['#1abc9c','#000'],
@@ -369,11 +417,24 @@ function workerRoleIcon(role){
 
 function skillRarityBadge(si) {
   if (!si) return '';
-  const neg = si.negative ? ' data-tip="⚠️ Negative skill — this has a downside!"' : '';
+  const neg = si.negative ? ' data-tip="⚠️ Negative skill"' : '';
   return `<span class="skill-rarity-badge" style="background:${si.rarity_color}22;color:${si.rarity_color};border:1px solid ${si.rarity_color}44;"
     data-tip="${si.rarity_label}: ${si.desc}"${neg}>
     ${si.rarity_label} · ${si.name}${si.negative?' ⚠️':''}
   </span>`;
+}
+
+function nextRarity(r) {
+  return {standard:'rare',rare:'epic',epic:'legendary'}[r]||'legendary';
+}
+
+function roleDesc(role) {
+  return {
+    baker:'Bakers bake cakes and can auto-fulfill orders',
+    cashier:'Cashiers specialize in serving customers quickly',
+    waiter:'Waiters passively improve customer experience and patience',
+    manager:'Managers buff all workers — check their skill for specific effects',
+  }[role]||role;
 }
 
 function buildWorkerCard(w, recipeOpts, ovenOpts) {
@@ -391,35 +452,25 @@ function buildWorkerCard(w, recipeOpts, ovenOpts) {
     <div class="xp-bar-wrap"><div class="xp-bar-fill" style="width:${w.xp_progress_pct}%"></div></div>
     <span class="xp-label">${w.experience}xp</span></div>`;
 
-  // Course status
   let courseHtml = '';
   if (w.course_finish_day) {
     const daysLeft = w.course_finish_day - (G.state?.day||1);
-    courseHtml = `<div class="course-active-badge" data-tip="Course finishes in ${daysLeft} day(s)">
-      📚 Upgrading → ${w.course_target_rarity} (${daysLeft}d)
-    </div>`;
+    courseHtml = `<div class="course-active-badge">📚 Upgrading → ${w.course_target_rarity} (${daysLeft}d)</div>`;
   } else if (si && si.rarity !== 'legendary' && si.rarity !== 'unique') {
     const costs=G.course_costs||{};
     const key=`${si.rarity}_to_${nextRarity(si.rarity)}`;
     const cfg=costs[key];
     if (cfg) {
       courseHtml = `<button class="btn btn-info btn-sm" style="margin-top:0.3rem;font-size:0.72rem"
-        data-tip="Send ${w.name} on a course to upgrade skill to ${nextRarity(si.rarity)} — ${cfg.days} days, ${fmt(cfg.cost)}"
+        data-tip="Send ${w.name} on a course — ${cfg.days} days, ${fmt(cfg.cost)}"
         onclick="startCourse(${w.id})">📚 Course ${fmt(cfg.cost)}</button>`;
     }
   }
 
-  // Controls — role-specific
   let controls = '';
   if (w.role === 'baker') {
-    const modeDesc={
-      orders_only:'Baker only fulfills orders when you click Fulfill — never bakes automatically',
-      casual:'Baker auto-fulfills orders; when idle, auto-bakes to restock shelves',
-      cake_only:'Baker ignores orders — only bakes the specific recipe you choose',
-    }[w.work_mode]||'';
     controls = `<div class="worker-controls">
       <select class="mode-select" data-wid="${w.id}" data-type="mode"
-              data-tip="Set baker's automatic behavior"
               onfocus="lockWorker(${w.id})" onchange="onWorkerChange(this)">
         <option value="orders_only" ${w.work_mode==='orders_only'?'selected':''}>🛎 Orders only</option>
         <option value="casual"      ${w.work_mode==='casual'?'selected':''}>🔀 Casual</option>
@@ -429,41 +480,37 @@ function buildWorkerCard(w, recipeOpts, ovenOpts) {
         onfocus="lockWorker(${w.id})" onchange="onWorkerChange(this)">
         <option value="">Pick recipe…</option>${recipeOpts}</select>`:''}
       <select class="mode-select" data-wid="${w.id}" data-type="oven"
-              data-tip="Assign to an oven for automatic baking"
               onfocus="lockWorker(${w.id})" onchange="onWorkerChange(this)">
         <option value="">No oven</option>${ovenOpts}
       </select>
     </div>`;
   } else if (w.role === 'cashier') {
-    controls = `<div class="worker-cashier-status" data-tip="Cashiers auto-fulfill the most urgent pending orders every second">
-      💳 Auto-fulfills orders</div>`;
+    controls = `<div class="worker-cashier-status">💳 Auto-fulfills orders</div>`;
   } else if (w.role === 'waiter') {
-    controls = `<div class="worker-cashier-status" data-tip="Waiters passively buff customer patience, tips, and order frequency based on their skill">
-      🍽️ Passive buffs active</div>`;
+    controls = `<div class="worker-cashier-status">🍽️ Passive buffs active</div>`;
   } else if (w.role === 'manager') {
-    controls = `<div class="worker-cashier-status" data-tip="Manager buffs all workers based on their skills. Check their skill for effects.">
-      📋 Store-wide buffs active</div>`;
+    controls = `<div class="worker-cashier-status">📋 Store-wide buffs active</div>`;
   }
 
   return `
   <div class="worker-card-new" id="wcard-${w.id}">
     <div class="worker-avatar-circle" style="background:${bg};color:${fg}"
-         data-tip="Click to view ${w.name}'s profile" onclick="openWorkerDetail(${w.id})">
+         onclick="openWorkerDetail(${w.id})">
       <div class="avatar-initials">${w.name.slice(0,2).toUpperCase()}</div>
       <div class="avatar-role-icon">${roleIcon}</div>
     </div>
     <div class="worker-body">
       <div class="worker-name-row">
-        <span class="worker-name" data-tip="View ${w.name}'s profile" onclick="openWorkerDetail(${w.id})">${w.name}</span>
-        <span class="worker-role-badge ${w.role}" data-tip="${roleDesc(w.role)}">${w.role}</span>
+        <span class="worker-name" onclick="openWorkerDetail(${w.id})">${w.name}</span>
+        <span class="worker-role-badge ${w.role}">${w.role}</span>
       </div>
       <div style="font-size:0.75rem;color:var(--muted)">
         ${fmt(w.salary_per_day)}/day &nbsp;${stars}&nbsp;
-        <span style="color:var(--accent2);font-size:0.68rem" data-tip="Can bake ${sizeMap[w.skill_level]||''} sizes">${sizeMap[w.skill_level]||''}</span>
+        <span style="color:var(--accent2);font-size:0.68rem">${sizeMap[w.skill_level]||''}</span>
       </div>
       <div class="skill-tags">
-        ${w.role==='baker'?`<span class="skill-tag base" data-tip="Bake speed ${w.bake_speed}/5 — reduces bake time by ${Math.round((1-Math.max(0.5,1-(w.bake_speed-1)*0.1))*100)}%">⚡ Bake ${w.bake_speed}</span>`:''}
-        <span class="skill-tag base" data-tip="Service speed ${w.service_speed}/5">🤝 Svc ${w.service_speed}</span>
+        ${w.role==='baker'?`<span class="skill-tag base">⚡ Bake ${w.bake_speed}</span>`:''}
+        <span class="skill-tag base">🤝 Svc ${w.service_speed}</span>
         ${si?skillRarityBadge(si):''}
       </div>
       ${xpBar}
@@ -471,22 +518,8 @@ function buildWorkerCard(w, recipeOpts, ovenOpts) {
       ${controls}
     </div>
     <button class="btn btn-danger btn-sm" style="align-self:flex-start;flex-shrink:0"
-            data-tip="Fire ${w.name} — saves ${fmt(w.salary_per_day)}/day"
             onclick="openFireModal(${w.id},'${w.name}')">✕</button>
   </div>`;
-}
-
-function nextRarity(r) {
-  return {standard:'rare',rare:'epic',epic:'legendary'}[r]||'legendary';
-}
-
-function roleDesc(role) {
-  return {
-    baker:'Bakers bake cakes and can auto-fulfill orders',
-    cashier:'Cashiers specialize in serving customers quickly',
-    waiter:'Waiters passively improve customer experience and patience',
-    manager:'Managers buff all workers — check their skill for specific effects',
-  }[role]||role;
 }
 
 async function onWorkerChange(sel) {
@@ -510,8 +543,7 @@ function renderStaff() {
       ?G.workers.map(w=>buildWorkerCard(w,recipeOpts,ovenOpts)).join('')
       :`<div class="empty-state"><div class="empty-icon">👥</div>No staff. Hire from the pool.</div>`;
     el.innerHTML=html+`<div class="hire-btn-section">
-      <button class="btn btn-success btn-full" data-tip="Browse available workers — pool refreshes every few days"
-              onclick="openHireModal()">➕ Hire Staff</button></div>`;
+      <button class="btn btn-success btn-full" onclick="openHireModal()">➕ Hire Staff</button></div>`;
     restoreSelects(el); return;
   }
   G.workers?.forEach(w=>{
@@ -546,27 +578,35 @@ function renderUpgrades() {
       <div class="shop-item-desc">${u.desc}</div>
       <div style="display:flex;align-items:center;justify-content:space-between;margin-top:0.4rem">
         <span class="shop-item-cost">${u.owned?'✅ Owned':fmt(u.cost)}</span>
-        ${!u.owned?`<button class="btn btn-info btn-sm" data-tip="Buy ${u.name}: ${u.desc}" onclick="buyUpgrade('${u.id}')">Buy</button>`:''}
+        ${!u.owned?`<button class="btn btn-info btn-sm" onclick="buyUpgrade('${u.id}')">Buy</button>`:''}
       </div>
     </div>`).join('');
 }
 
-// ═══════════════════════════════════════════════════════════
-//  RECIPE SHOP
-//  Phase 2: recipes shown with lock animation, blur overlay,
-//  padlock icon, price tag, and animated unlock on purchase
-// ═══════════════════════════════════════════════════════════
+// ── Recipe Shop (Issue 2: waits for G.recipes) ────────────────────────────────
 function renderRecipeShop() {
-  const el=$('panel-recipe-shop'); if(!el||!G.recipes) return;
+  const el=$('panel-recipe-shop');
+  if(!el) return;
+
+  // Issue 2: guard — render nothing until data arrives
+  if(!G.recipes) {
+    el.innerHTML=`<div class="empty-state"><div class="empty-icon">📖</div>Loading…</div>`;
+    return;
+  }
+
+  if(!G.recipes.length) {
+    el.innerHTML=`<div class="empty-state"><div class="empty-icon">📖</div>No recipes found. Run <code>seed_recipes</code>.</div>`;
+    return;
+  }
+
   const state=G.state||{};
 
   el.innerHTML = G.recipes.map(r => {
     const locked   = !r.is_unlocked;
     const canBuy   = r.can_purchase && r.shop_price;
     const price    = r.shop_price;
-    const affordable = price && float(state.money) >= price;
+    const affordable = price && Number(state.money) >= price;
 
-    // Lock message
     let lockMsg = '';
     if (locked) {
       if (r.unlock_rep && state.reputation < r.unlock_rep)
@@ -578,8 +618,7 @@ function renderRecipeShop() {
     }
 
     return `
-    <div class="recipe-shop-card ${locked?'locked':''} ${r.is_todays?'secret':''}"
-         id="rshop-${r.id}">
+    <div class="recipe-shop-card ${locked?'locked':''}" id="rshop-${r.id}">
       <div class="rshop-emoji-wrap">
         <span class="rshop-emoji ${locked?'blurred':''}">${r.emoji}</span>
         ${locked?`<div class="rshop-lock-overlay">
@@ -592,15 +631,14 @@ function renderRecipeShop() {
         <div class="rshop-type">${r.type}</div>
         ${locked?`<div class="rshop-lock-msg">${lockMsg}</div>`:`
         <div class="price-row" style="margin-top:0.3rem">
-          <div class="price-tag" data-tip="Small — ${r.bake_seconds.Small}s"><span class="sz">S</span><span class="pr">$${r.prices.Small}</span></div>
-          <div class="price-tag" data-tip="Medium — ${r.bake_seconds.Medium}s"><span class="sz">M</span><span class="pr">$${r.prices.Medium}</span></div>
-          <div class="price-tag" data-tip="Large — ${r.bake_seconds.Large}s"><span class="sz">L</span><span class="pr">$${r.prices.Large}</span></div>
+          <div class="price-tag"><span class="sz">S</span><span class="pr">$${r.prices.Small}</span></div>
+          <div class="price-tag"><span class="sz">M</span><span class="pr">$${r.prices.Medium}</span></div>
+          <div class="price-tag"><span class="sz">L</span><span class="pr">$${r.prices.Large}</span></div>
         </div>`}
       </div>
       ${canBuy?`<button class="btn ${affordable?'btn-success':'btn-secondary'} btn-sm"
         style="flex-shrink:0;align-self:center"
         ${!affordable?'disabled':''}
-        data-tip="${affordable?`Unlock ${r.name} for ${fmt(price)}`:`Need ${fmt(price)} — you have ${fmt(state.money)}`}"
         onclick="buyRecipe(${r.id})">
         ${affordable?`🔓 ${fmt(price)}`:`🔒 ${fmt(price)}`}
       </button>`:''}
@@ -608,11 +646,10 @@ function renderRecipeShop() {
   }).join('');
 }
 
-function float(v){return Number(v);}
-
-// ── History ───────────────────────────────────────────────────────────────────
+// ── Reports ───────────────────────────────────────────────────────────────────
 function renderReportsTab() {
-  const el=$('panel-history'); if(!G.reports?.length){el.innerHTML=`<div class="empty-state"><div class="empty-icon">📊</div>No reports yet.</div>`;return;}
+  const el=$('panel-history');
+  if(!G.reports?.length){el.innerHTML=`<div class="empty-state"><div class="empty-icon">📊</div>No reports yet.</div>`;return;}
   const rows=G.reports.map(r=>{const c=r.net_profit>=0?'var(--green)':'var(--accent)';return`<tr>
     <td>Day ${r.day}</td><td style="color:var(--accent2)">${fmt(r.revenue)}</td>
     <td style="color:${c}">${fmt(r.net_profit)}</td>
@@ -623,7 +660,7 @@ function renderReportsTab() {
   el.innerHTML=`<table class="history-table"><thead><tr><th>Day</th><th>Rev</th><th>Net</th><th>✔</th><th>✘</th><th>😊</th><th>Best</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
-// ── Notification ──────────────────────────────────────────────────────────────
+// ── Notifications ─────────────────────────────────────────────────────────────
 function renderNotificationBadge(){
   const badge=$('notif-badge');
   if(badge&&G.event_log?.length){badge.textContent=G.event_log.length>9?'9+':G.event_log.length;badge.style.display='flex';}
@@ -642,9 +679,9 @@ function toggleNotifications(){
 }
 
 // ── Fire Modal ────────────────────────────────────────────────────────────────
-let _fireId=null,_fireName='';
+let _fireId=null;
 function openFireModal(id,name){
-  _fireId=id;_fireName=name;
+  _fireId=id;
   $('fire-modal-name').textContent=name;
   const w=G.workers?.find(w=>w.id===id);
   const sl=$('fire-modal-salary');
@@ -663,32 +700,13 @@ async function confirmFire(){
 function openWorkerDetail(workerId) {
   const w=G.workers?.find(w=>w.id===workerId); if(!w) return;
   const state=G.state||{};
-  const sizeMap={1:'Small only (★1)',2:'Small + Medium (★★2)',3:'All sizes (★★★3)'};
+  const sizeMap={1:'Small only',2:'Small + Medium',3:'All sizes'};
   const si=w.skill_info;
   const [bg]=AVATAR_COLORS[w.id%AVATAR_COLORS.length];
   const roleIcon=workerRoleIcon(w.role);
 
   const xpNeeded=w.xp_for_next_level?w.xp_for_next_level-w.experience:0;
   const nextLvl=w.level>=10?'Max level':`${xpNeeded} XP to Level ${w.level+1}`;
-
-  const starNote=()=>{
-    if(w.skill_level>=3) return '';
-    const tl=w.skill_level===1?4:8,ts=w.skill_level===1?2:3;
-    const lvlXp=[0,20,50,100,180,300,480,700,1000,1400][tl]||0;
-    const rem=Math.max(0,lvlXp-w.experience);
-    return `<div class="detail-row" style="color:var(--accent2)">⭐ Reaches ★${ts} at Level ${tl} (${rem} XP away)</div>`;
-  };
-
-  const courseNote=w.course_finish_day
-    ?`<div class="detail-row" style="color:var(--blue)">📚 Course in progress → ${w.course_target_rarity} (Day ${w.course_finish_day})</div>`
-    :'';
-
-  const modeDesc={
-    orders_only:'Orders Only — fulfills orders when you click Fulfill',
-    casual:'Casual — auto-fulfills + auto-bakes when idle',
-    cake_only:'Specific Cake — only bakes assigned recipe',
-  };
-  const assignedOven=G.ovens?.find(o=>o.id===w.assigned_oven_id);
 
   $('worker-detail-body').innerHTML=`
     <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1.25rem">
@@ -701,37 +719,24 @@ function openWorkerDetail(workerId) {
     </div>
     <div class="detail-section">
       <div class="detail-label">Level & XP</div>
-      <div class="detail-row">Level <strong>${w.level}</strong>/10 · ${w.experience} XP total</div>
+      <div class="detail-row">Level <strong>${w.level}</strong>/10 · ${w.experience} XP</div>
       <div class="xp-row" style="margin:0.4rem 0">
         <span class="xp-label">Lv.${w.level}</span>
         <div class="xp-bar-wrap" style="flex:1"><div class="xp-bar-fill" style="width:${w.xp_progress_pct}%"></div></div>
         <span class="xp-label">Lv.${Math.min(w.level+1,10)}</span>
       </div>
       <div class="detail-row" style="color:var(--muted)">${nextLvl}</div>
-      ${starNote()}
     </div>
     <div class="detail-section">
       <div class="detail-label">Skills</div>
-      ${w.role==='baker'?`<div class="detail-row">⚡ Bake Speed <strong>${w.bake_speed}/5</strong> — bake time −${Math.round((1-Math.max(0.5,1-(w.bake_speed-1)*0.1))*100)}%</div>`:''}
+      ${w.role==='baker'?`<div class="detail-row">⚡ Bake Speed <strong>${w.bake_speed}/5</strong></div>`:''}
       <div class="detail-row">🤝 Service <strong>${w.service_speed}/5</strong></div>
-      ${w.role==='baker'||w.role==='cashier'?`<div class="detail-row">🎯 Star <strong>${'★'.repeat(w.skill_level)}</strong> — ${sizeMap[w.skill_level]}</div>`:''}
+      <div class="detail-row">🎯 Star <strong>${'★'.repeat(w.skill_level)}</strong> — ${sizeMap[w.skill_level]||''}</div>
       ${si?`<div class="detail-row">${skillRarityBadge(si)}</div>`:''}
-      ${courseNote}
     </div>
-    ${w.role==='baker'?`
-    <div class="detail-section">
-      <div class="detail-label">Work Mode</div>
-      <div class="detail-row"><strong>${w.work_mode.replace('_',' ')}</strong></div>
-      <div class="detail-row" style="color:var(--muted);font-size:0.8rem">${modeDesc[w.work_mode]||''}</div>
-      <div class="detail-row">Oven: <strong>${assignedOven?`${assignedOven.name} (×${assignedOven.speed_bonus})`:'None'}</strong></div>
-    </div>`:`
-    <div class="detail-section">
-      <div class="detail-label">Role</div>
-      <div class="detail-row">${roleDesc(w.role)}</div>
-    </div>`}
     <div class="detail-section">
       <div class="detail-label">Employment</div>
-      <div class="detail-row">Hired on Day <strong>${w.hired_on_day||'?'}</strong></div>
+      <div class="detail-row">Hired Day <strong>${w.hired_on_day||'?'}</strong></div>
       <div class="detail-row">Days employed: <strong>${state.day-(w.hired_on_day||state.day)}</strong></div>
     </div>`;
   $('worker-detail-modal').classList.add('open');
@@ -743,7 +748,7 @@ function openHireModal(){
   const pool=G.hire_pool||[];
   const body=$('hire-modal-body');
   if(!pool.length){
-    body.innerHTML=`<div class="empty-state"><div class="empty-icon">😴</div>No workers available.<br><span style="color:var(--muted);font-size:0.8rem">Pool refreshes every few days.</span></div>`;
+    body.innerHTML=`<div class="empty-state"><div class="empty-icon">😴</div>No workers available.</div>`;
   } else {
     body.innerHTML=pool.map(hw=>{
       const stars=Array.from({length:3},(_,i)=>`<span style="color:${i<hw.skill_level?'#f5a623':'#333'};font-size:1rem">★</span>`).join('');
@@ -751,21 +756,22 @@ function openHireModal(){
       const si=hw.skill_info;
       const daysLeft=hw.expires_on_day-(G.state?.day||1);
       return `<div class="hire-pool-card">
-        <div class="hire-pool-avatar" data-tip="${hw.role}">${icon}</div>
+        <div class="hire-pool-avatar">${icon}</div>
         <div class="hire-pool-info">
           <div class="hire-pool-name">${hw.name}</div>
           <div style="font-size:0.78rem;color:var(--muted);text-transform:capitalize">${hw.role}</div>
           <div>${stars}</div>
           <div class="skill-tags" style="margin-top:0.3rem">
-            ${hw.role==='baker'?`<span class="skill-tag base" data-tip="Bake speed">⚡ ${hw.bake_speed}</span>`:''}
-            <span class="skill-tag base" data-tip="Service speed">🤝 ${hw.service_speed}</span>
-            ${si?`<span style="font-size:0.7rem;padding:0.1rem 0.4rem;border-radius:6px;font-weight:700;background:${si.rarity_color}22;color:${si.rarity_color};border:1px solid ${si.rarity_color}44" data-tip="${si.rarity_label}: ${si.desc}">${si.name}</span>`:''}
+            ${hw.role==='baker'?`<span class="skill-tag base">⚡ ${hw.bake_speed}</span>`:''}
+            <span class="skill-tag base">🤝 ${hw.service_speed}</span>
+            ${si?`<span style="font-size:0.7rem;padding:0.1rem 0.4rem;border-radius:6px;font-weight:700;background:${si.rarity_color}22;color:${si.rarity_color};border:1px solid ${si.rarity_color}44"
+              data-tip="${si.rarity_label}: ${si.desc}">${si.name}</span>`:''}
           </div>
-          <div style="font-size:0.75rem;color:var(--muted);margin-top:0.2rem">${fmt(hw.salary_per_day)}/day · <span data-tip="${daysLeft}d left in pool">${daysLeft}d left</span></div>
+          <div style="font-size:0.75rem;color:var(--muted);margin-top:0.2rem">${fmt(hw.salary_per_day)}/day · ${daysLeft}d left</div>
         </div>
         <div style="display:flex;flex-direction:column;align-items:flex-end;gap:0.5rem">
           <div style="font-weight:800;color:var(--accent2)">${fmt(hw.hire_cost)}</div>
-          <button class="btn btn-success btn-sm" data-tip="Hire ${hw.name}" onclick="hireFromPool(${hw.id},this)">Hire</button>
+          <button class="btn btn-success btn-sm" onclick="hireFromPool(${hw.id},this)">Hire</button>
         </div>
       </div>`;
     }).join('');
@@ -780,22 +786,41 @@ async function hireFromPool(hwId,btn){
   else{toast(r.message,'error');btn.disabled=false;btn.textContent='Hire';}
 }
 
-// ── Bake Modal ────────────────────────────────────────────────────────────────
+// ── Bake Modal (Issue 1: fallback when no recipes) ────────────────────────────
 function openBakeModal(ovenId){
   selectedOven=ovenId;
-  const oven=G.ovens.find(o=>o.id===ovenId);
+  const oven=G.ovens?.find(o=>o.id===ovenId);
   $('bake-modal-title').textContent=`🔥 Bake — ${oven?oven.name:''}`;
-  $('bake-recipe-select').innerHTML=(G.recipes||[]).filter(r=>r.is_unlocked).map(r=>`<option value="${r.id}">${r.emoji} ${r.name}</option>`).join('');
-  updateBakePreview(); $('bake-modal').classList.add('open');
+
+  // Issue 1: filter unlocked recipes
+  const unlocked=(G.recipes||[]).filter(r=>r.is_unlocked);
+  const noRecipesEl=$('bake-no-recipes');
+  const recipeGroupEl=$('bake-recipe-group');
+  const confirmBtn=$('bake-confirm-btn');
+
+  if(!unlocked.length) {
+    if(noRecipesEl) noRecipesEl.style.display='block';
+    if(recipeGroupEl) recipeGroupEl.style.display='none';
+    if(confirmBtn) confirmBtn.disabled=true;
+  } else {
+    if(noRecipesEl) noRecipesEl.style.display='none';
+    if(recipeGroupEl) recipeGroupEl.style.display='flex';
+    if(confirmBtn) confirmBtn.disabled=false;
+    $('bake-recipe-select').innerHTML=unlocked.map(r=>`<option value="${r.id}">${r.emoji} ${r.name}</option>`).join('');
+  }
+
+  updateBakePreview();
+  $('bake-modal').classList.add('open');
 }
 function closeBakeModal(){$('bake-modal').classList.remove('open');selectedOven=null;}
 function updateBakePreview(){
-  const r=G.recipes?.find(r=>r.id===parseInt($('bake-recipe-select').value)); if(!r) return;
+  const r=G.recipes?.find(r=>r.id===parseInt($('bake-recipe-select').value));
+  if(!r){$('bake-preview').innerHTML='';return;}
   const size=$('bake-size-select').value,price=r.prices[size];
   $('bake-preview').innerHTML=`<div style="display:flex;justify-content:space-between;font-size:0.85rem;gap:1rem">
-    <span data-tip="Revenue when sold">Sell: <strong style="color:var(--accent2)">${fmt(price)}</strong></span>
-    <span data-tip="Deducted now">Cost: <strong style="color:var(--accent)">${fmt((price*0.30).toFixed(2))}</strong></span>
-    <span data-tip="Real seconds to bake">Time: <strong>${r.bake_seconds[size]}s</strong></span></div>`;
+    <span>Sell: <strong style="color:var(--accent2)">${fmt(price)}</strong></span>
+    <span>Cost: <strong style="color:var(--accent)">${fmt((price*0.30).toFixed(2))}</strong></span>
+    <span>Time: <strong>${r.bake_seconds[size]}s</strong></span></div>`;
 }
 async function confirmBake(){
   const recipeId=parseInt($('bake-recipe-select').value),size=$('bake-size-select').value;
@@ -807,6 +832,7 @@ async function confirmBake(){
 
 // ── Report ────────────────────────────────────────────────────────────────────
 function showReport(r){
+  if(!r){fetchState();showScreen('screen-briefing');return;}
   const pc=r.net_profit>=0?'positive':'negative';
   $('report-content').innerHTML=`
     <div class="report-title">📋 Day ${r.day} Report</div>
@@ -855,11 +881,15 @@ async function startGame(){
 }
 async function openStore(){
   const r=await api('/api/open/',{});
-  if(r.ok){if(r.active_event)toast(`${r.active_event.icon} ${r.active_event.title}: ${r.active_event.msg}`,'warn');toast(r.message,'success');fetchState();}
-  else toast(r.message,'error');
+  if(r.ok){
+    _dayEndAt = r.day_end_at || null;
+    if(r.active_event)toast(`${r.active_event.icon} ${r.active_event.title}: ${r.active_event.msg}`,'warn');
+    toast(r.message,'success');fetchState();
+  } else toast(r.message,'error');
 }
 async function endDay(){
   const r=await api('/api/end-day/',{});
+  _dayEndAt=null;
   if(r.ok){showReport(r.report);if(r.game_over)setTimeout(()=>toast('💸 Game Over!','error'),400);}
   else toast(r.message,'error');
 }
@@ -876,7 +906,6 @@ async function buyRecipe(id){
   const r=await api('/api/buy-recipe/',{recipe_id:id});
   if(r.ok){
     toast(r.message,'success');
-    // Animate the unlock
     const card=$(`rshop-${id}`);
     if(card){card.classList.add('unlocking');setTimeout(()=>card.classList.remove('unlocking'),600);}
     fetchState();
@@ -887,12 +916,22 @@ async function startCourse(workerId){
   toast(r.message,r.ok?'success':'error');if(r.ok)fetchState();
 }
 
-// ── Boot ──────────────────────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded',async()=>{
-  try{
-    const data=await api('/api/state/');
-    if(data.state?.game_started){G=data;showScreen('screen-game');startPolling();}
-    else showScreen('screen-start');
-  }catch{showScreen('screen-start');}
-  $('input-store-name')?.addEventListener('keydown',e=>{if(e.key==='Enter')startGame();});
+// ── Boot (Issue 6: only show start screen when game_started=false) ────────────
+document.addEventListener('DOMContentLoaded', async () => {
+  try {
+    const data = await api('/api/state/');
+    G = data;
+    if (G.state?.day_end_at) _dayEndAt = G.state.day_end_at;
+
+    if (data.state?.game_started) {
+      showScreen('screen-game');
+      startPolling();
+    } else {
+      // Issue 6: always show start screen when no game running
+      showScreen('screen-start');
+    }
+  } catch {
+    showScreen('screen-start');
+  }
+  $('input-store-name')?.addEventListener('keydown', e => { if(e.key==='Enter') startGame(); });
 });

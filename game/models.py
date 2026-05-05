@@ -1,9 +1,9 @@
 """
-models.py — Phase 2
-New: Worker roles (waiter, manager), skill rarity system,
-     recipe shop, Today's Customer, course system, salary rebalance
+models.py — Phase 2 + auth + day-timer
+New: user-scoped GameState, day_end_at for timed days
 """
 from django.db import models
+from django.contrib.auth.models import User
 from django.utils import timezone
 from datetime import timedelta
 
@@ -44,7 +44,6 @@ SKILL_RARITY_LABELS = {
 }
 
 # ── Full skill catalogue ──────────────────────────────────────────────────────
-# Each skill: id, name, role, rarity, description, effect_key, effect_value, is_negative
 SKILL_CATALOGUE = {
     # BAKER SKILLS
     'speed_hands':       {'name':'Speed Hands',        'role':'baker',   'rarity':'standard',  'desc':'Bake time −8%',                      'effect':'bake_time_mult',    'value':0.92, 'negative':False},
@@ -79,7 +78,7 @@ SKILL_CATALOGUE = {
     'charming_host':     {'name':'Charming Host',         'role':'waiter',  'rarity':'legendary', 'desc':'VIP visit chance +20%',              'effect':'vip_chance',        'value':0.20, 'negative':False},
     'spirit_of_service': {'name':'Spirit of Service',    'role':'waiter',  'rarity':'unique',    'desc':'No orders expire today',             'effect':'no_expiry',         'value':1,    'negative':False},
 
-    # MANAGER SKILLS (mix of positive and negative)
+    # MANAGER SKILLS
     'motivator':         {'name':'Motivator',             'role':'manager', 'rarity':'standard',  'desc':'All workers +5% speed',              'effect':'global_speed',      'value':1.05, 'negative':False},
     'organizer':         {'name':'Organizer',             'role':'manager', 'rarity':'standard',  'desc':'Reduces idle time',                  'effect':'idle_reduction',    'value':0.15, 'negative':False},
     'iron_will':         {'name':'Iron Will',             'role':'manager', 'rarity':'standard',  'desc':'One random worker −5% speed',        'effect':'random_nerf',       'value':0.95, 'negative':True},
@@ -171,6 +170,9 @@ DAILY_EVENTS = [
 
 # ══════════════════════════════════════════════════════════════════
 class GameState(models.Model):
+    # Issue 7: per-user GameState
+    user                = models.OneToOneField(
+        User, on_delete=models.CASCADE, related_name='game_state', null=True, blank=True)
     store_name          = models.CharField(max_length=100, default="Sweet Layers")
     day                 = models.IntegerField(default=1)
     money               = models.DecimalField(max_digits=10, decimal_places=2, default=500.00)
@@ -178,6 +180,8 @@ class GameState(models.Model):
     is_open             = models.BooleanField(default=False)
     game_started        = models.BooleanField(default=False)
     day_started_at      = models.DateTimeField(null=True, blank=True)
+    # Issue 8: timed days
+    day_end_at          = models.DateTimeField(null=True, blank=True)
     next_order_at       = models.DateTimeField(null=True, blank=True)
     total_revenue       = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     total_fulfilled     = models.IntegerField(default=0)
@@ -195,15 +199,28 @@ class GameState(models.Model):
         verbose_name = "Game State"
 
     def __str__(self):
-        return f"{self.store_name} — Day {self.day}"
+        owner = self.user.username if self.user_id else 'anon'
+        return f"{self.store_name} — Day {self.day} ({owner})"
 
     @classmethod
-    def get(cls):
+    def get(cls, user=None):
+        """Get or create GameState for a user (or the legacy pk=1 state)."""
+        if user and user.is_authenticated:
+            obj, _ = cls.objects.get_or_create(user=user, defaults={'store_name': 'Sweet Layers'})
+            return obj
+        # Fallback: legacy single-state (used by engine before user context set)
         obj, _ = cls.objects.get_or_create(pk=1)
         return obj
 
     def has_upgrade(self, uid):
         return uid in (self.owned_upgrades or [])
+
+    @property
+    def day_seconds_remaining(self):
+        """Seconds left in the current timed day. None if no timer running."""
+        if not self.is_open or not self.day_end_at:
+            return None
+        return max(0.0, (self.day_end_at - timezone.now()).total_seconds())
 
     @property
     def reputation_tier(self):
@@ -215,7 +232,6 @@ class GameState(models.Model):
         return              ('Unknown',    '#888888')
 
     def _get_manager_buffs(self):
-        """Aggregate all active manager skill effects."""
         buffs = {
             'global_speed': 1.0,
             'ingredient_mult': 1.0,
@@ -223,7 +239,7 @@ class GameState(models.Model):
             'xp_mult': 1.0,
             'cashier_speed_nerf': 1.0,
         }
-        managers = Worker.objects.filter(role='manager', is_active=True)
+        managers = Worker.objects.filter(game_state=self, role='manager', is_active=True)
         for m in managers:
             skill = m.skill_id
             if not skill or skill not in SKILL_CATALOGUE:
@@ -231,10 +247,10 @@ class GameState(models.Model):
             sc = SKILL_CATALOGUE[skill]
             eff = sc['effect']
             val = sc['value']
-            if eff == 'global_speed':    buffs['global_speed']     *= val
-            if eff == 'ingredient_mult': buffs['ingredient_mult']   *= val
-            if eff == 'revenue_mult':    buffs['revenue_mult']      *= val
-            if eff == 'xp_mult':         buffs['xp_mult']           *= val
+            if eff == 'global_speed':       buffs['global_speed']      *= val
+            if eff == 'ingredient_mult':    buffs['ingredient_mult']    *= val
+            if eff == 'revenue_mult':       buffs['revenue_mult']       *= val
+            if eff == 'xp_mult':            buffs['xp_mult']            *= val
             if eff == 'cashier_speed_nerf': buffs['cashier_speed_nerf'] *= val
         return buffs
 
@@ -243,7 +259,7 @@ class GameState(models.Model):
         base = 1.0 + (self.reputation - 50) / 100
         if self.active_event and self.active_event.get('id') == 'festival': base *= 2.0
         if self.rush_ends_at and timezone.now() < self.rush_ends_at: base *= 3.0
-        waiters = Worker.objects.filter(role='waiter', is_active=True)
+        waiters = Worker.objects.filter(game_state=self, role='waiter', is_active=True)
         for w in waiters:
             if w.skill_id and SKILL_CATALOGUE.get(w.skill_id, {}).get('effect') == 'order_freq_mult':
                 base *= SKILL_CATALOGUE[w.skill_id]['value']
@@ -277,7 +293,7 @@ class GameState(models.Model):
         mult = 1.0
         if self.has_upgrade('display_case'): mult *= 1.10
         if self.has_upgrade('music_system'): mult *= 1.08
-        waiters = Worker.objects.filter(role='waiter', is_active=True)
+        waiters = Worker.objects.filter(game_state=self, role='waiter', is_active=True)
         for w in waiters:
             sc = SKILL_CATALOGUE.get(w.skill_id or '', {})
             if sc.get('effect') == 'patience_mult': mult *= sc['value']
@@ -285,6 +301,7 @@ class GameState(models.Model):
 
     def to_dict(self):
         tier_name, tier_color = self.reputation_tier
+        day_secs = self.day_seconds_remaining
         return {
             'store_name':        self.store_name,
             'day':               self.day,
@@ -301,6 +318,9 @@ class GameState(models.Model):
             'owned_upgrades':    self.owned_upgrades or [],
             'rush_active':       bool(self.rush_ends_at and timezone.now() < self.rush_ends_at),
             'course_discount':   self.course_discount_active,
+            # Issue 8: day timer
+            'day_end_at':        self.day_end_at.isoformat() if self.day_end_at else None,
+            'day_seconds_remaining': day_secs,
         }
 
 
@@ -321,12 +341,10 @@ class CakeRecipe(models.Model):
     ingredient_cost_pct = models.FloatField(default=0.30)
     is_unlocked         = models.BooleanField(default=False)
     is_starter          = models.BooleanField(default=False)
-    # Shop unlock
     shop_price          = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
     unlock_day          = models.IntegerField(null=True, blank=True)
     unlock_rep          = models.IntegerField(null=True, blank=True)
     unlock_message      = models.CharField(max_length=200, blank=True, default='')
-    # Secret recipe availability window
     secret_available_from_day = models.IntegerField(null=True, blank=True)
     secret_expires_day        = models.IntegerField(null=True, blank=True)
 
@@ -335,7 +353,6 @@ class CakeRecipe(models.Model):
     def get_price(self, size, state=None):
         base = float({'Small':self.price_small,'Medium':self.price_medium,'Large':self.price_large}[size])
         if state: base *= state.price_mult
-        # event: sugar_rush boosts Special cakes
         if state and state.active_event and state.active_event.get('id') == 'sugar_rush':
             if self.cake_type == 'Special': base *= 1.25
         return round(base, 2)
@@ -373,6 +390,9 @@ class CakeRecipe(models.Model):
 # ══════════════════════════════════════════════════════════════════
 class Oven(models.Model):
     TIER_CHOICES = [('basic','Basic'),('pro','Pro'),('industrial','Industrial')]
+    # Issue 7: scope ovens to game_state
+    game_state       = models.ForeignKey(
+        GameState, on_delete=models.CASCADE, related_name='ovens', null=True, blank=True)
     name             = models.CharField(max_length=100)
     tier             = models.CharField(max_length=20, choices=TIER_CHOICES, default='basic')
     speed_bonus      = models.FloatField(default=1.0)
@@ -416,6 +436,9 @@ class Worker(models.Model):
         ('cake_only',  'Cake Only'),
     ]
 
+    # Issue 7: scope workers to game_state
+    game_state     = models.ForeignKey(
+        GameState, on_delete=models.CASCADE, related_name='workers', null=True, blank=True)
     name           = models.CharField(max_length=100)
     role           = models.CharField(max_length=20, choices=ROLE_CHOICES)
     salary_per_day = models.DecimalField(max_digits=6, decimal_places=2)
@@ -423,7 +446,6 @@ class Worker(models.Model):
     skill_level    = models.IntegerField(default=1)
     bake_speed     = models.IntegerField(default=1)
     service_speed  = models.IntegerField(default=1)
-    # New skill system
     skill_id       = models.CharField(max_length=60, blank=True, default='')
     skill_rarity   = models.CharField(max_length=20, default='standard')
     is_active      = models.BooleanField(default=True)
@@ -436,7 +458,6 @@ class Worker(models.Model):
         related_name='dedicated_workers')
     experience     = models.IntegerField(default=0)
     level          = models.IntegerField(default=1)
-    # Course in progress
     course_target_rarity = models.CharField(max_length=20, blank=True, default='')
     course_finish_day    = models.IntegerField(null=True, blank=True)
 
@@ -445,7 +466,6 @@ class Worker(models.Model):
     @property
     def bake_time_factor(self):
         base = max(0.5, 1.0 - (self.bake_speed - 1) * 0.1)
-        # Apply skill effect
         sc = SKILL_CATALOGUE.get(self.skill_id or '', {})
         if sc.get('effect') == 'bake_time_mult': base *= sc['value']
         if sc.get('effect') == 'golden_hands':   base *= 0.75
@@ -502,6 +522,9 @@ class Worker(models.Model):
 # ══════════════════════════════════════════════════════════════════
 class HireableWorker(models.Model):
     ROLE_CHOICES = [('baker','Baker'),('cashier','Cashier'),('waiter','Waiter'),('manager','Manager')]
+    # Issue 7: scope hire pool to game_state
+    game_state         = models.ForeignKey(
+        GameState, on_delete=models.CASCADE, related_name='hireable_workers', null=True, blank=True)
     name               = models.CharField(max_length=100)
     role               = models.CharField(max_length=20, choices=ROLE_CHOICES)
     skill_level        = models.IntegerField(default=1)
@@ -542,6 +565,9 @@ class HireableWorker(models.Model):
 
 # ══════════════════════════════════════════════════════════════════
 class BakedCake(models.Model):
+    # Issue 7: scope baked cakes to game_state
+    game_state        = models.ForeignKey(
+        GameState, on_delete=models.CASCADE, related_name='baked_cakes', null=True, blank=True)
     recipe            = models.ForeignKey(CakeRecipe, on_delete=models.CASCADE, related_name='baked_instances')
     size              = models.CharField(max_length=10, choices=SIZE_CHOICES)
     is_baking         = models.BooleanField(default=True)
@@ -597,6 +623,9 @@ class CustomerOrder(models.Model):
     STATUS_CHOICES     = [('pending','Pending'),('fulfilled','Fulfilled'),('expired','Expired')]
     ORDER_TYPE_CHOICES = [('standard','Standard'),('urgent','Urgent'),('bulk','Bulk')]
 
+    # Issue 7: scope orders to game_state
+    game_state     = models.ForeignKey(
+        GameState, on_delete=models.CASCADE, related_name='orders', null=True, blank=True)
     customer_name  = models.CharField(max_length=100)
     customer_type  = models.CharField(max_length=20, choices=CUSTOMER_TYPE_CHOICES, default='standard')
     recipe         = models.ForeignKey(CakeRecipe, on_delete=models.CASCADE)
@@ -612,7 +641,7 @@ class CustomerOrder(models.Model):
     day_placed     = models.IntegerField()
     revenue        = models.DecimalField(max_digits=8, decimal_places=2, default=0)
     tip            = models.DecimalField(max_digits=6, decimal_places=2, default=0)
-    satisfaction   = models.IntegerField(default=0)  # 1–5 stars
+    satisfaction   = models.IntegerField(default=0)
 
     def __str__(self): return f"{self.customer_name}: {self.recipe.name}"
 
@@ -656,6 +685,8 @@ class CustomerOrder(models.Model):
 
 # ══════════════════════════════════════════════════════════════════
 class EventLog(models.Model):
+    game_state = models.ForeignKey(
+        GameState, on_delete=models.CASCADE, related_name='event_logs', null=True, blank=True)
     day       = models.IntegerField()
     timestamp = models.DateTimeField(auto_now_add=True)
     icon      = models.CharField(max_length=10, default='ℹ️')
@@ -671,7 +702,9 @@ class EventLog(models.Model):
 
 # ══════════════════════════════════════════════════════════════════
 class DayReport(models.Model):
-    day                   = models.IntegerField(unique=True)
+    game_state            = models.ForeignKey(
+        GameState, on_delete=models.CASCADE, related_name='day_reports', null=True, blank=True)
+    day                   = models.IntegerField()
     revenue               = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     worker_salaries       = models.DecimalField(max_digits=8,  decimal_places=2, default=0)
     ingredient_costs      = models.DecimalField(max_digits=8,  decimal_places=2, default=0)

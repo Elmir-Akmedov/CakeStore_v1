@@ -1,0 +1,29 @@
+{% extends "registration/base_auth.html" %}
+{% block content %}
+<div class="auth-card">
+  <div class="auth-logo">🎂</div>
+  <div class="auth-title">Create Account</div>
+
+  {% if form.errors %}
+  <div class="errors">
+    <ul>{% for field in form %}{% for e in field.errors %}<li>{{ e }}</li>{% endfor %}{% endfor %}
+    {% for e in form.non_field_errors %}<li>{{ e }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+
+  <form method="post">
+    {% csrf_token %}
+    {% for field in form %}
+    <div class="form-group">
+      <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+      {{ field }}
+      {% if field.help_text %}<small style="color:var(--muted);font-size:0.75rem">{{ field.help_text }}</small>{% endif %}
+    </div>
+    {% endfor %}
+    <button class="btn btn-primary" type="submit">🍰 Start Baking</button>
+  </form>
+
+  <div class="divider">— already have an account? —</div>
+  <a href="{% url 'login' %}" class="btn btn-secondary">Sign In</a>
+</div>
+{% endblock %}

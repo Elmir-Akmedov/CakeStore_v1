@@ -2,7 +2,6 @@ from django.core.management.base import BaseCommand
 from game.models import CakeRecipe
 
 RECIPES = [
-    # Starters — free, unlocked from day 1
     {
         'name':'Chocolate Cake','cake_type':'Regular','emoji':'🍫',
         'ingredients':['chocolate','flour','sugar','eggs','butter'],
@@ -19,7 +18,6 @@ RECIPES = [
         'ingredient_cost_pct':0.26,'is_unlocked':True,'is_starter':True,
         'shop_price':None,'unlock_day':None,'unlock_rep':None,'unlock_message':'',
     },
-    # Shop recipes — purchasable when conditions met
     {
         'name':'Strawberry Cake','cake_type':'Regular','emoji':'🍓',
         'ingredients':['flour','sugar','eggs','strawberries','cream'],
@@ -103,15 +101,18 @@ RECIPES = [
     },
 ]
 
+
 class Command(BaseCommand):
-    help = 'Seed cake recipes with Phase 2 pricing and unlock gates'
+    help = 'Seed cake recipes'
 
     def handle(self, *args, **kwargs):
         created = updated = 0
         for data in RECIPES:
             obj, made = CakeRecipe.objects.update_or_create(
                 name=data['name'], defaults=data)
-            if made: created += 1
-            else: updated += 1
+            if made:
+                created += 1
+            else:
+                updated += 1
         self.stdout.write(self.style.SUCCESS(
             f'✅  Recipes seeded — {created} created, {updated} updated.'))
