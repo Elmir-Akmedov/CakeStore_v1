@@ -10,6 +10,7 @@
 'use strict';
 
 let G            = {};
+let _lastReadLogCount = 0;
 let pollTimer    = null;
 let animFrame    = null;
 let selectedOven = null;
@@ -313,7 +314,14 @@ function renderOvens() {
 
 function renderBaking() {
   const el=$('panel-baking');
-  if(!G.baking?.length){el.innerHTML=`<div class="empty-state"><div class="empty-icon">⏳</div>Nothing baking.</div>`;return;}
+  const incoming_bk=new Set((G.baking||[]).map(c=>c.id));
+  el.querySelectorAll('[data-bake-id]').forEach(card=>{
+    if(!incoming_bk.has(parseInt(card.dataset.bakeId))) card.remove();
+  });
+  if(!G.baking?.length){
+    if(!el.querySelector('[data-bake-id]')) el.innerHTML=`<div class="empty-state"><div class="empty-icon">⏳</div>Nothing baking.</div>`;
+    return;
+  }
   const incoming=new Set(G.baking.map(c=>c.id));
   el.querySelectorAll('[data-bake-id]').forEach(card=>{ if(!incoming.has(parseInt(card.dataset.bakeId)))card.remove(); });
   G.baking.forEach(c=>{
@@ -329,8 +337,16 @@ function renderBaking() {
 }
 
 function renderInventory() {
-  const el=$('panel-inventory');
-  if(!G.inventory?.length){el.innerHTML=`<div class="empty-state"><div class="empty-icon">🎂</div>Shelf empty — bake something!</div>`;return;}
+    const el=$('panel-inventory');
+  // Always purge stale cards first
+  const incoming_inv=new Set((G.inventory||[]).map(c=>c.id));
+  el.querySelectorAll('[data-inv-id]').forEach(card=>{
+    if(!incoming_inv.has(parseInt(card.dataset.invId))) card.remove();
+  });
+  if(!G.inventory?.length){
+    if(!el.querySelector('[data-inv-id]')) el.innerHTML=`<div class="empty-state"><div class="empty-icon">🎂</div>Shelf empty — bake something!</div>`;
+    return;
+  }
   const incoming=new Set(G.inventory.map(c=>c.id));
   el.querySelectorAll('[data-inv-id]').forEach(card=>{ if(!incoming.has(parseInt(card.dataset.invId)))card.remove(); });
   G.inventory.forEach(c=>{
@@ -356,15 +372,15 @@ function renderInventory() {
 
 function renderOrders() {
   const el=$('panel-orders');
+  const incoming_ord=new Set((G.orders||[]).map(o=>o.id));
+  el.querySelectorAll('[data-order-id]').forEach(c=>{
+    if(!incoming_ord.has(parseInt(c.dataset.orderId))) c.remove();
+  });
   if(!G.orders?.length){
-    el.innerHTML=G.state?.is_open
-      ?`<div class="empty-state"><div class="empty-icon">🛎</div>Waiting for customers…</div>`
-      :`<div class="empty-state"><div class="empty-icon">🔐</div>Open the store to get orders.</div>`;
+    el.innerHTML=G.state?.is_open ? `...waiting...` : `...closed...`;
     return;
   }
   const existing=new Set([...el.querySelectorAll('[data-order-id]')].map(c=>parseInt(c.dataset.orderId)));
-  const incoming=new Set(G.orders.map(o=>o.id));
-  existing.forEach(id=>{ if(!incoming.has(id))$(`order-card-${id}`)?.remove(); });
   G.orders.forEach(o=>{ if(!existing.has(o.id)) el.appendChild(buildOrderCard(o)); });
   if(el.querySelectorAll('[data-order-id]').length===0) G.orders.forEach(o=>el.appendChild(buildOrderCard(o)));
 }
@@ -663,12 +679,25 @@ function renderReportsTab() {
 // ── Notifications ─────────────────────────────────────────────────────────────
 function renderNotificationBadge(){
   const badge=$('notif-badge');
-  if(badge&&G.event_log?.length){badge.textContent=G.event_log.length>9?'9+':G.event_log.length;badge.style.display='flex';}
+  if (!badge) return;
+  const total = G.event_log?.length || 0;
+  // Count only important unread events (level-ups, hires, course completions)
+  const important = ['success','warning'];
+  const unread = (G.event_log || [])
+    .slice(0, total - _lastReadLogCount)
+    .filter(e => important.includes(e.log_type)).length;
+  if (unread > 0) {
+    badge.textContent = unread > 9 ? '9+' : unread;
+    badge.style.display = 'flex';
+  } else {
+    badge.style.display = 'none';
+  }
 }
 function toggleNotifications(){
   const panel=$('notif-panel'); if(!panel) return;
   const open=panel.classList.toggle('open');
   if(open&&G.event_log){
+    _lastReadLogCount = G.event_log.length;
     panel.innerHTML=`<div class="notif-header"><strong>Activity Log</strong>
       <button class="btn btn-secondary btn-sm" onclick="toggleNotifications()">✕</button></div>
       <div class="notif-list">${G.event_log.map(e=>`<div class="notif-item ${e.log_type}">

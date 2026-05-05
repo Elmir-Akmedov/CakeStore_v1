@@ -475,11 +475,17 @@ def _worker_tick():
                 if lu:
                     level_ups.append(lu)
             elif worker.work_mode == 'casual':
-                lu = _worker_fulfill_order(worker, state)
-                if not lu:
-                    _auto_bake(worker, state)
+                # Only try to fulfill if there are actually fulfillable orders
+                has_pending = CustomerOrder.objects.filter(game_state=state, status='pending').exists()
+                if has_pending:
+                    lu = _worker_fulfill_order(worker, state)
+                    if lu:
+                        level_ups.append(lu)
+                    else:
+                        # Orders exist but can't be filled — go bake
+                        _auto_bake(worker, state)
                 else:
-                    level_ups.append(lu)
+                    _auto_bake(worker, state)
             elif worker.work_mode == 'cake_only':
                 _auto_bake(worker, state, force_recipe=worker.target_recipe)
 
@@ -505,6 +511,12 @@ def _waiter_bump_urgent():
 
 
 def _worker_fulfill_order(worker, state):
+    # Bakers in orders_only/casual only serve if there's matching stock
+    if worker.role == 'baker':
+        has_stock = BakedCake.objects.filter(
+            game_state=state, is_baking=False, remaining_slices__gt=0).exists()
+        if not has_stock:
+            return None
     orders = (CustomerOrder.objects
               .filter(game_state=state, status='pending')
               .select_related('recipe')
@@ -525,6 +537,19 @@ def _worker_fulfill_order(worker, state):
         orders_list = list(orders)
 
     for order in orders_list:
+    # Quick stock check before hitting fulfill_order's transaction
+        if order.quantity > 0:
+            has_stock = BakedCake.objects.filter(
+                game_state=state, recipe=order.recipe, size=order.size,
+                is_baking=False, remaining_slices=SIZE_SLICES[order.size]
+            ).exists()
+        else:
+            has_stock = BakedCake.objects.filter(
+                game_state=state, recipe=order.recipe,
+                is_baking=False, remaining_slices__gte=order.pieces
+            ).exists()
+        if not has_stock:
+            continue
         result = fulfill_order(order.pk)
         if result['ok']:
             xp = {'urgent': 5, 'bulk': 4, 'standard': 3}.get(order.order_type, 3)
@@ -1006,11 +1031,11 @@ def _generate_hire_pool():
     random.shuffle(pool)
     pool = pool[:pool_size]
 
-    role_weights_by_day = {
-        True:  ['baker','baker','cashier','cashier'],
-        False: ['baker','baker','cashier','cashier','waiter','manager'],
-    }
-    role_pool = role_weights_by_day[day <= 10]
+    if day <= 10:
+        role_weights = {'baker': 55, 'cashier': 30, 'waiter': 10, 'manager': 5}
+    else:
+        role_weights = {'baker': 45, 'cashier': 20, 'waiter': 20, 'manager': 15}
+    role_pool = random.choices(list(role_weights.keys()), weights=list(role_weights.values()), k=1)[0]
 
     for name in pool:
         star  = random.choices(stars, weights=weights, k=1)[0]
