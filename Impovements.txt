@@ -1,159 +1,181 @@
-The biggest bugs I see are these:
+Synthesized frontend roadmap with backend requirements and unified implementation checklist
+Synthesized frontend roadmap with backend requirements and unified implementation checklist
+Good — this document is detailed and mostly aligns with our existing plan. Let me map what's new vs what we already designed, then give you a unified backend checklist.
 
-start_baking() trusts raw size input. It immediately uses recipe.get_price(size), recipe.get_bake_seconds(size), and SIZE_SLICES[size] with no validation, so an invalid size can crash the request with a KeyError. That is a real server-side bug, not just a polish issue. Fix it by validating size against SIZE_SLICES before any lookup and returning a clean error.
-Your frontend sends POST requests as JSON with only Content-Type: application/json, but I do not see any CSRF token being attached in game.js. If your Django views are not explicitly csrf_exempt, most of these calls will fail. Fix it by adding CSRF handling in api() or by using a safe Django token flow.
-_last_worker_tick is a module-global throttle. That works in one Python process, but it becomes unreliable if you run multiple server workers or restart the process, because each process has its own copy of that variable. The result can be duplicated or inconsistent worker actions. A DB-backed lock or a single authoritative tick job is safer.
-Several model fields exist but are not really used by the simulation: service_speed, special_skill, and the multitasker / fresh_expert ideas are defined in Worker, but the engine mostly only uses bake_speed through bake_time_factor. That makes part of your game data decorative instead of functional.
-The code mutates shared game state in many places without visible transaction protection: baking, fulfilling orders, hiring, firing, buying ovens, and ending the day all touch money, orders, and inventory. With polling and multiple requests, race conditions are possible. Wrap the critical actions in transaction.atomic() and lock the relevant rows when you update them.
-The order timer in the UI is approximate, not exact. renderOrders() uses a fixed maxSec = 360, but real order patience ranges from 90 to 360 seconds and urgency changes at 60/30 seconds. That means the progress bar will look wrong for many orders. Use the actual expiry time or a per-order max duration from the backend.
+What the document adds beyond our existing plan
+Plan Phase	Backend need	Already designed?
+Phase 2 — Worker model	positive_trait, negative_trait, skill_mastery (JSON), morale on Worker + HireableWorker	❌ New
+Phase 2 — Morale system	Morale delta in end_day(), warning log if < 20	❌ New
+Phase 2 — Trait catalogues	POSITIVE_TRAITS, NEGATIVE_TRAITS, ROLE_SKILLS dicts in models.py	❌ New
+Phase 7 — Baking minigame	manual_result_mult field on BakedCake, new api_take_over_bake endpoint	❌ New
+Phase 8 — Drinks	DrinkRecipe, BrewStation (plan name) vs our CoffeeMachine → align to BrewStation	✅ Designed, name conflict
+Phase 9 — Activity log	is_important field on EventLog, mark important events in log_event()	✅ Partially (badge logic only)
+Name conflicts to resolve:
 
-What I would improve first, in order:
+Plan says BrewStation → we designed CoffeeMachine → use BrewStation
+Plan has 6 starter drinks → we had 12 → use plan's 6, add others progressively
+Unified Backend Preparation Checklist
+Everything the frontend will need from the backend, in one place:
 
-Add validation and error handling on every API action, starting with bake, fulfill, hire, buy-oven, assign, and worker-mode.
-Fix CSRF for all POST requests from game.js.
-Wrap state-changing operations in database transactions and row locks.
-Make worker stats actually affect gameplay, especially service_speed and special_skill.
-Replace the rough UI timer logic with backend-derived timing data.
-Add tests for the core flows: start baking, auto-baking, order fulfillment, expiry, end-of-day settlement, hiring/firing, and oven assignment.
+Models (models.py + migration 0007)
+Worker — add fields:
 
-A practical improvement plan would be:
+python
+positive_trait  = CharField(max_length=60, blank=True, default='')
+negative_trait  = CharField(max_length=60, blank=True, default='')
+skill_mastery   = JSONField(default=dict)   # e.g. {"oven_instinct": 3}
+morale          = IntegerField(default=70)
+brew_speed      = IntegerField(default=1)   # for barista role
+HireableWorker — add fields:
 
-Phase 1: protect correctness. Add input validation, CSRF, transactions, and tests for the main API actions.
-Phase 2: make the game rules consistent. Decide how worker skills, freshness, oven tiers, and order urgency should really work, then implement those rules in one place in game_engine.py.
-Phase 3: improve the frontend. Use exact timer data, reduce unnecessary full rerenders, and show clearer error states when an API call fails.
-Phase 4: balance and polish. Tune prices, salaries, bake times, reputation changes, and unlock pacing so the game feels fair.
+python
+positive_trait  = CharField(max_length=60, blank=True, default='')
+negative_trait  = CharField(max_length=60, blank=True, default='')
+Worker.ROLE_CHOICES — add: ('barista', 'Barista')
 
+Worker.WORK_MODE_CHOICES — add: ('drink_only', 'Drink Only')
 
-rewrite your game_engine (full clean architecture)
-design database schema like real tycoon games
-add AI workers (auto decision making)
-or convert this into multiplayer
+BakedCake — add field:
 
-I found a few concrete frontend mismatches too: the recipe preview fetches state a second time, the bake preview uses a hardcoded 30% ingredient cost while the backend uses the recipe’s real percentage, and the order timer is using a fake max value instead of backend timing. Those are easy wins after the backend loop is fixed.
+python
+manual_result_mult = FloatField(default=1.0)
+# 'perfect'→1.30, 'good'→1.0, 'overdone'→0.80, 'burnt'→0.0
+EventLog — add field:
 
-Thought for 43s
+python
+is_important = BooleanField(default=False)
+New models: DrinkRecipe, BrewStation, BrewedDrink
 
-This is the right moment to switch from “poll-driven simulation” to a server-authoritative game loop. Right now your frontend polls /api/state/ every 500ms, and that endpoint also advances the world by finishing cakes, running workers, generating orders, and expiring orders. That means a GET request is changing game state, so the client is effectively driving time. On top of that, all POST endpoints are csrf_exempt, and the views do very little input validation before handing values into the engine.
+CustomerOrder — add fields:
 
-The loop I would move to
+python
+drink_recipe   = FK(DrinkRecipe, null=True, blank=True)
+order_category = CharField(choices=['cake','drink'], default='cake')
+New constants in models.py:
 
-The backend should own time. The frontend should only:
+python
+POSITIVE_TRAITS = { ... }   # 8 traits from plan
+NEGATIVE_TRAITS = { ... }   # 8 traits from plan
+ROLE_SKILLS     = { ... }   # per-role learnable skills
+SKILL_MASTERY_NAMES = {1:'Novice', 2:'Apprentice', 3:'Skilled', 4:'Expert', 5:'Master'}
+BREW_STATION_CATALOG = {
+    'basic':        {'name':'Espresso Machine', 'cost':180, 'brew_speed_bonus':1.0},
+    'pro':          {'name':'Pro Coffee Bar',   'cost':420, 'brew_speed_bonus':1.5},
+    'professional': {'name':'Barista Station',  'cost':950, 'brew_speed_bonus':2.2},
+}
+Add to KITCHEN_UPGRADES:
 
-send player commands,
-fetch snapshots,
-render state.
+python
+'drinks_menu': {'name':'Drinks Menu', 'emoji':'☕', 'cost':350,
+    'desc':'Unlocks the full drinks system'}
+Add barista skills to SKILL_CATALOGUE: (9 skills as designed)
 
-A cleaner loop looks like this:
+Engine (game_engine.py)
+log_event() — add is_important=False param:
 
-def tick_game(now=None):
-    now = now or timezone.now()
-    with transaction.atomic():
-        state = GameState.objects.select_for_update().get(pk=1)
+python
+def log_event(icon, message, log_type='info', day=None, is_important=False):
+Mark as important: hiring (👋), firing, level-up (🌟), course complete (🎓), daily events.
 
-        if not state.game_started:
-            return
-        if not state.is_open:
-            return
+end_day() — add morale system after salary deduction:
 
-        complete_finished_cakes(now)
-        process_worker_actions(now)
-        generate_due_orders(now)
-        expire_due_orders(now)
+python
+for w in workers:
+    delta = 0
+    if net_profit > 0: delta += 2
+    if expired_count == 0: delta += 1
+    delta -= min(expired_count, 5)
+    w.morale = max(0, min(100, w.morale + delta))
+    w.save(update_fields=['morale'])
+    if w.morale < 20:
+        log_event('⚠️', f'{w.name} morale critical!', log_type='warning', is_important=True)
+_generate_hire_pool() — add trait assignment:
 
-        state.last_tick_at = now
-        state.save(update_fields=['last_tick_at'])
+python
+pos = random.choice(list(POSITIVE_TRAITS.keys()))
+neg = random.choice(list(NEGATIVE_TRAITS.keys()))
+# save to HireableWorker
+hire_from_pool() — copy traits, init skill_mastery:
 
+python
+primary_skill = ROLE_SKILLS.get(hw.role, [''])[0]
+skill_mastery = {primary_skill: 1} if primary_skill else {}
+Worker.objects.create(..., positive_trait=hw.positive_trait,
+    negative_trait=hw.negative_trait, skill_mastery=skill_mastery)
+start_baking() — accept optional manual result:
 
-Then:
+python
+def start_baking(recipe_id, size, oven_id, speed_penalty=1.0, manual_result=None):
+    ...
+    mult_map = {'perfect':1.30, 'good':1.0, 'overdone':0.80, 'burnt':0.0}
+    cake.manual_result_mult = mult_map.get(manual_result, 1.0)
+    cake.save(update_fields=[..., 'manual_result_mult'])
+fulfill_order() — apply manual_result_mult:
 
-GET /api/state/ becomes read-only snapshot data,
-POST /api/tick/ is handled by a scheduler/background job, not the browser,
-or, if you want the lightest possible setup, a management command runs the tick loop every second.
+python
+# For cake orders, after revenue = order.calculate_revenue(s):
+if order.order_category == 'cake':
+    cake_used = BakedCake.objects.filter(...).first()
+    if cake_used and cake_used.manual_result_mult != 1.0:
+        revenue *= cake_used.manual_result_mult
+New drinks functions: start_brewing(), buy_brew_station(), _check_brewing(), _barista_fulfill_order(), _auto_brew(), check_drink_unlocks()
 
-That is the biggest redesign you need.
+_worker_tick() — add barista block
 
-File-by-file improvements
-models.py
+_maybe_generate_order() — add drink order generation (gated on drinks_menu upgrade)
 
-Your models are close, but they need a few structural upgrades. GameState should store a clock field like last_tick_at so the game can advance independently of the frontend. CustomerOrder should store a real time budget field, because the UI currently uses a hardcoded 360-second timer while the backend creates orders with 90–360 seconds of patience. Worker.skill_level, bake_speed, service_speed, and special_skill are defined, but not all of them affect gameplay yet, so either wire them into the simulation or simplify them. Oven would also benefit from an explicit “starter oven” flag instead of depending on pk=1, which is fragile.
+get_full_state() — add:
 
-What I would add:
+python
+'drink_recipes':    [...],
+'brew_stations':    [...],
+'brewed_drinks':    [...],
+'brewing_drinks':   [...],
+start_game() cleanup — add:
 
-GameState.last_tick_at
-CustomerOrder.max_patience_sec or created_at + expires_at
-Oven.is_starter
-validation in model clean() methods for size/mode fields
-game_engine.py
+python
+BrewedDrink.objects.filter(game_state=state).delete()
+BrewStation.objects.filter(game_state=state).delete()
+Views + URLs
+New endpoints:
 
-This is where the main redesign belongs. Right now get_full_state() mutates the world by calling check_baking(), worker_tick(), maybe_generate_order(), and expire_orders() before returning data. That is the core architectural problem. Move that logic into a dedicated tick_game() function, make it transactional, and keep get_full_state() purely read-only.
+POST /api/brew-drink/       → api_brew_drink
+POST /api/buy-brew-station/ → api_buy_brew_station
+POST /api/take-over-bake/   → api_take_over_bake
+Seed Commands
+seed_recipes.py — add 6 new cakes from plan: Carrot Cake 🥕, Tiramisu 🍰, Black Forest 🍒, Mango Mousse 🥭, Pistachio Roll 🌿, Cotton Candy Cake 🩷
 
-The engine should also:
+New seed_drinks.py — 6 drinks from plan + 6 more from our design for later unlock gates.
 
-remove the global _last_worker_tick throttle, because it is process-local and breaks under multiple workers,
-validate size before using SIZE_SLICES[size] or get_bake_seconds(size),
-use select_for_update() for critical money/order/inventory operations,
-make worker skills matter in real mechanics, not just in UI labels,
-use Decimal consistently and only convert to float at serialization.
+Admin (admin.py)
+Register: DrinkRecipe, BrewStation, BrewedDrink with list_display.
 
-A good split is:
-
-advance_game(now) → simulation only,
-snapshot_state() → serialization only,
-fulfill_order(), start_baking(), hire_worker(), buy_oven() → atomic domain actions.
-views.py
-
-This layer should be thin. Right now it is thin-ish, but it has two important issues: every mutation endpoint is csrf_exempt, and several endpoints trust raw values too much. That means bad input can crash the server, and CSRF protection is disabled across the whole game API.
-
-What to change:
-
-remove @csrf_exempt,
-add CSRF token support in game.js,
-validate recipe_id, worker_id, oven_id, role, tier, work_mode, and size,
-wrap write endpoints in transaction.atomic(),
-return proper status codes for invalid input, not found, or conflict,
-make api_state() read-only and let a background tick job advance the game.
-
-Also, api_worker_mode() can currently crash if target_recipe_id is invalid, because it calls CakeRecipe.objects.get(...) without handling DoesNotExist. That needs a try/except path.
-
-game.js
-
-Your UI logic is usable, but it still contains a few backend assumptions that will cause mismatches. The poll interval is 500ms, which is more aggressive than your own comments suggest, and the frontend currently calls /api/state/ twice: once for polling and once again in renderRecipes(). That is unnecessary load and creates two separate render paths.
-
-Specific fixes:
-
-add CSRF token support in api(),
-stop using the second fetch in renderRecipes() and render recipes from G.recipes,
-replace the hardcoded 0.30 bake cost preview with r.ingredient_cost_pct,
-replace the hardcoded maxSec = 360 order timer with a backend-provided max patience value,
-reduce polling to 1000ms or 2000ms once the backend is authoritative,
-prevent overlapping polls with a simple inFlight guard.
-
-One very important mismatch: the bake preview says cost is always 30% of sell price, but the backend uses recipe.ingredient_cost_pct, so those numbers will drift whenever a recipe uses a different cost percentage.
-
-index.html
-
-This file is mostly a shell, which is good. The main cleanup is to remove the inline renderRecipes() fetch and move that rendering into game.js, so the UI has one source of truth. The current HTML also hardcodes shop cards, which is okay for a simple game, but those should ideally come from backend data later.
-
-I would improve:
-
-use defer on the script tag,
-remove the inline recipes fetch,
-add a small loading state for initial state boot,
-keep the markup semantic with main / section wrappers.
-style.css
-
-The styling is already decent and organized. The main improvements are structural and responsive:
-
-use minmax(0, 1fr) in the grid columns to avoid overflow,
-change 100vh to 100dvh on the main game screen for mobile stability,
-clean up old unused styles like .worker-card if you fully commit to .worker-card-new,
-make the panels scroll independently more predictably on narrow screens.
-
-Your CSS already supports the newer worker card design and the tab layout, so this file mostly needs cleanup and responsiveness tuning rather than a full rewrite.
-
-Priority order
-Make /api/state/ read-only and move simulation to a server tick.
-Remove csrf_exempt and add real CSRF handling.
-Add input validation and transaction safety in views.py and game_engine.py.
-Fix frontend/backend mismatches: bake cost, order timer, duplicate recipe fetch.
-Wire worker stats and special skills into actual gameplay.
+Final Execution Order (backend only)
+D-1  SQLite → PostgreSQL         ← settings.py + requirements.txt only
+  ↓
+A-1  BUG: stale DOM icons        ← game.js, 3 functions
+A-2  BUG: orders_only fix        ← game_engine.py, _worker_fulfill_order
+A-3  BUG: casual mode fix        ← game_engine.py, _worker_tick
+A-4  BUG: hire pool bias         ← game_engine.py, _generate_hire_pool
+A-5  BUG: activity badge         ← game.js, 2 functions
+A-6  BUG: migration 0001 typo    ← remove max_width=20
+  ↓
+M-1  models.py: all new fields + constants + new models
+M-2  migration 0007
+M-3  seed_recipes.py: 6 new cakes
+M-4  seed_drinks.py: new command
+  ↓
+E-1  game_engine.py: log_event is_important
+E-2  game_engine.py: morale in end_day
+E-3  game_engine.py: traits in hire pool + hire_from_pool
+E-4  game_engine.py: start_baking manual_result
+E-5  game_engine.py: fulfill_order manual_result_mult
+E-6  game_engine.py: full drinks system
+E-7  game_engine.py: get_full_state drinks fields
+E-8  game_engine.py: start_game cleanup
+  ↓
+V-1  views.py + urls.py: 3 new endpoints
+  ↓
+V-2  admin.py: register new models
+  ↓
+TEST: full smoke test per plan's Task 10.3

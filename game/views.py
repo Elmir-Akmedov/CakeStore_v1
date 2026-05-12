@@ -7,6 +7,7 @@ from django.contrib.auth.forms import UserCreationForm
 from django.contrib.auth.decorators import login_required
 from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
+from django.db import transaction
 from .models import GameState
 from . import game_engine as engine
 
@@ -24,7 +25,8 @@ def _inject_user(request):
 
 def _run(fn, *args, **kwargs):
     try:
-        result = fn(*args, **kwargs)
+        with transaction.atomic():
+            result = fn(*args, **kwargs)
         if isinstance(result, dict) and not result.get('ok', True):
             return _err(result.get('message', 'Action failed.'))
         return _ok(result) if isinstance(result, dict) else _ok({'result': result})
@@ -55,7 +57,7 @@ def register(request):
 def index(request):
     return render(request, 'game/index.html', {'username': request.user.username})
 
-
+@transaction.atomic
 @login_required
 @csrf_exempt
 @require_http_methods(['POST'])

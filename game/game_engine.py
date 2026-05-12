@@ -422,10 +422,9 @@ def _check_baking():
     state = _state()
     now  = timezone.now()
     done = list(
-        BakedCake.objects
-        .select_for_update()
-        .filter(game_state=state, is_baking=True, bake_finish_at__lte=now)
-        .select_related('recipe', 'oven')
+    BakedCake.objects
+    .filter(game_state=state, is_baking=True, bake_finish_at__lte=now)
+    .select_related('recipe', 'oven')
     )
     if not done:
         return []
@@ -835,9 +834,8 @@ def fulfill_order(order_id):
     with transaction.atomic():
         try:
             order = (CustomerOrder.objects
-                     .select_for_update()
-                     .select_related('recipe')
-                     .get(pk=order_id, game_state=state, status='pending'))
+                    .select_related('recipe')
+                    .get(pk=order_id, game_state=state, status='pending'))
         except CustomerOrder.DoesNotExist:
             return {'ok': False, 'message': 'Order not found or already processed.'}
 
