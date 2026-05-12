@@ -474,15 +474,9 @@ def _worker_tick():
                 if lu:
                     level_ups.append(lu)
             elif worker.work_mode == 'casual':
-                # Only try to fulfill if there are actually fulfillable orders
-                has_pending = CustomerOrder.objects.filter(game_state=state, status='pending').exists()
-                if has_pending:
-                    lu = _worker_fulfill_order(worker, state)
-                    if lu:
-                        level_ups.append(lu)
-                    else:
-                        # Orders exist but can't be filled — go bake
-                        _auto_bake(worker, state)
+                fulfilled = _worker_fulfill_order(worker, state)
+                if fulfilled is not None:
+                    level_ups.append(fulfilled)
                 else:
                     _auto_bake(worker, state)
             elif worker.work_mode == 'cake_only':

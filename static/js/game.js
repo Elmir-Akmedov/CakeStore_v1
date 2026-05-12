@@ -94,7 +94,9 @@ function switchTab(groupId, tabId) {
   });
 
   document.addEventListener('mouseout', e => {
-    if (!e.target.closest('[data-tip]')) return;
+    const tip = e.target.closest('[data-tip]');
+    if (!tip) return;
+    if (tip.contains(e.relatedTarget)) return;
     clearTimeout(showTimer);
     el.style.display = 'none';
   });
@@ -504,10 +506,10 @@ function buildWorkerCard(w, recipeOpts, ovenOpts) {
 
   return `
   <div class="worker-card-new" id="wcard-${w.id}">
-    <div class="worker-avatar-circle" style="background:${bg};color:${fg}"
-         onclick="openWorkerDetail(${w.id})">
-      <div class="avatar-initials">${w.name.slice(0,2).toUpperCase()}</div>
-      <div class="avatar-role-icon">${roleIcon}</div>
+    <div class="worker-avatar-circle" style="background:${bg}"
+         onclick="openWorkerDetail(${w.id})" data-tip="View ${w.name}'s profile">
+      <span class="avatar-role-emoji">${roleIcon}</span>
+      <div class="avatar-star-badge">${'★'.repeat(w.skill_level)}</div>
     </div>
     <div class="worker-body">
       <div class="worker-name-row">
@@ -545,24 +547,44 @@ function lockWorker(wid){lockedWorkers.add(wid);}
 
 function renderStaff() {
   const el=$('panel-staff'); if(!el) return;
+
+  let hireSection = el.querySelector('.hire-btn-section');
+  if (!hireSection) {
+    hireSection = document.createElement('div');
+    hireSection.className = 'hire-btn-section';
+    hireSection.innerHTML = `<button class="btn btn-success btn-full" onclick="openHireModal()">➕ Hire Staff</button>`;
+    el.appendChild(hireSection);
+  }
+
   const recipeOpts=(G.recipes||[]).filter(r=>r.is_unlocked).map(r=>`<option value="${r.id}">${r.emoji} ${r.name}</option>`).join('');
   const ovenOpts=(G.ovens||[]).map(o=>`<option value="${o.id}">${o.name}</option>`).join('');
-  const hasCards=el.querySelector('.worker-card-new');
-  if(!hasCards){
-    const html=G.workers?.length
-      ?G.workers.map(w=>buildWorkerCard(w,recipeOpts,ovenOpts)).join('')
-      :`<div class="empty-state"><div class="empty-icon">👥</div>No staff. Hire from the pool.</div>`;
-    el.innerHTML=html+`<div class="hire-btn-section">
-      <button class="btn btn-success btn-full" onclick="openHireModal()">➕ Hire Staff</button></div>`;
-    restoreSelects(el); return;
+
+  let emptyEl = el.querySelector('.staff-empty');
+  if (!G.workers?.length) {
+    el.querySelectorAll('.worker-card-new').forEach(c=>c.remove());
+    if (!emptyEl) {
+      emptyEl = document.createElement('div');
+      emptyEl.className = 'empty-state staff-empty';
+      emptyEl.innerHTML = `<div class="empty-icon">👥</div>No staff hired yet.`;
+      el.insertBefore(emptyEl, hireSection);
+    }
+    return;
   }
+  emptyEl?.remove();
+
   G.workers?.forEach(w=>{
     if(lockedWorkers.has(w.id)) return;
     const existing=$(`wcard-${w.id}`);
     const newCard=buildWorkerCard(w,recipeOpts,ovenOpts);
-    if(!existing){const btn=el.querySelector('.hire-btn-section');const tmp=document.createElement('div');tmp.innerHTML=newCard;el.insertBefore(tmp.firstElementChild,btn);}
-    else existing.outerHTML=newCard;
+    if(!existing){
+      const tmp=document.createElement('div');
+      tmp.innerHTML=newCard;
+      el.insertBefore(tmp.firstElementChild, hireSection);
+    } else {
+      existing.outerHTML=newCard;
+    }
   });
+
   el.querySelectorAll('.worker-card-new').forEach(card=>{
     const wid=parseInt(card.id.replace('wcard-',''));
     if(!G.workers?.find(w=>w.id===wid))card.remove();
@@ -776,26 +798,33 @@ function openHireModal(){
     body.innerHTML=`<div class="empty-state"><div class="empty-icon">😴</div>No workers available.</div>`;
   } else {
     body.innerHTML=pool.map(hw=>{
-      const stars=Array.from({length:3},(_,i)=>`<span style="color:${i<hw.skill_level?'#f5a623':'#333'};font-size:1rem">★</span>`).join('');
+      const stars=Array.from({length:3},(_,i)=>`<span style="color:${i<hw.skill_level?'#f5a623':'#2a2a4a'}">★</span>`).join('');
       const icon=workerRoleIcon(hw.role);
       const si=hw.skill_info;
       const daysLeft=hw.expires_on_day-(G.state?.day||1);
+      const [bg]=AVATAR_COLORS[hw.id%AVATAR_COLORS.length];
+      const rarityColor=si?si.rarity_color:'#888';
       return `<div class="hire-pool-card">
-        <div class="hire-pool-avatar">${icon}</div>
+        <div class="worker-avatar-circle" style="background:${bg};cursor:default;flex-shrink:0;width:52px;height:52px">
+          <span class="avatar-role-emoji">${icon}</span>
+          <div class="avatar-star-badge">${'★'.repeat(hw.skill_level)}</div>
+        </div>
         <div class="hire-pool-info">
           <div class="hire-pool-name">${hw.name}</div>
-          <div style="font-size:0.78rem;color:var(--muted);text-transform:capitalize">${hw.role}</div>
-          <div>${stars}</div>
-          <div class="skill-tags" style="margin-top:0.3rem">
-            ${hw.role==='baker'?`<span class="skill-tag base">⚡ ${hw.bake_speed}</span>`:''}
-            <span class="skill-tag base">🤝 ${hw.service_speed}</span>
-            ${si?`<span style="font-size:0.7rem;padding:0.1rem 0.4rem;border-radius:6px;font-weight:700;background:${si.rarity_color}22;color:${si.rarity_color};border:1px solid ${si.rarity_color}44"
-              data-tip="${si.rarity_label}: ${si.desc}">${si.name}</span>`:''}
+          <div style="font-size:0.75rem;color:var(--muted);text-transform:capitalize;margin-bottom:0.2rem">${hw.role}</div>
+          <div class="skill-tags">
+            ${hw.role==='baker'?`<span class="skill-tag base">⚡ Bake ${hw.bake_speed}</span>`:''}
+            <span class="skill-tag base">🤝 Svc ${hw.service_speed}</span>
+            ${si?`<span class="skill-tag" style="background:${rarityColor}22;color:${rarityColor};border:1px solid ${rarityColor}44"
+              data-tip="${si.rarity_label}: ${si.desc}">${si.name}</span>`:'<span class="skill-tag base">No skill</span>'}
           </div>
-          <div style="font-size:0.75rem;color:var(--muted);margin-top:0.2rem">${fmt(hw.salary_per_day)}/day · ${daysLeft}d left</div>
+          <div style="font-size:0.72rem;color:var(--muted);margin-top:0.3rem">
+            ${fmt(hw.salary_per_day)}/day &nbsp;·&nbsp; ${daysLeft}d left in pool
+          </div>
         </div>
-        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:0.5rem">
-          <div style="font-weight:800;color:var(--accent2)">${fmt(hw.hire_cost)}</div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:0.5rem;flex-shrink:0">
+          <div style="font-weight:800;color:var(--accent2);font-size:0.95rem">${fmt(hw.hire_cost)}</div>
+          <div style="font-size:0.68rem;color:var(--muted)">${stars}</div>
           <button class="btn btn-success btn-sm" onclick="hireFromPool(${hw.id},this)">Hire</button>
         </div>
       </div>`;
