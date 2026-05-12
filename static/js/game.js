@@ -314,10 +314,8 @@ function renderOvens() {
 
 function renderBaking() {
   const el=$('panel-baking');
-  const incoming_bk=new Set((G.baking||[]).map(c=>c.id));
-  el.querySelectorAll('[data-bake-id]').forEach(card=>{
-    if(!incoming_bk.has(parseInt(card.dataset.bakeId))) card.remove();
-  });
+  const incoming=new Set((G.baking||[]).map(c=>c.id));
+  el.querySelectorAll('[data-bake-id]').forEach(card=>{ if(!incoming.has(parseInt(card.dataset.bakeId)))card.remove(); });
   if(!G.baking?.length){
     if(!el.querySelector('[data-bake-id]')) el.innerHTML=`<div class="empty-state"><div class="empty-icon">⏳</div>Nothing baking.</div>`;
     return;
@@ -337,12 +335,9 @@ function renderBaking() {
 }
 
 function renderInventory() {
-    const el=$('panel-inventory');
-  // Always purge stale cards first
-  const incoming_inv=new Set((G.inventory||[]).map(c=>c.id));
-  el.querySelectorAll('[data-inv-id]').forEach(card=>{
-    if(!incoming_inv.has(parseInt(card.dataset.invId))) card.remove();
-  });
+  const el=$('panel-inventory');
+  const incoming=new Set((G.inventory||[]).map(c=>c.id));
+  el.querySelectorAll('[data-inv-id]').forEach(card=>{ if(!incoming.has(parseInt(card.dataset.invId)))card.remove(); });
   if(!G.inventory?.length){
     if(!el.querySelector('[data-inv-id]')) el.innerHTML=`<div class="empty-state"><div class="empty-icon">🎂</div>Shelf empty — bake something!</div>`;
     return;
@@ -372,17 +367,16 @@ function renderInventory() {
 
 function renderOrders() {
   const el=$('panel-orders');
-  const incoming_ord=new Set((G.orders||[]).map(o=>o.id));
-  el.querySelectorAll('[data-order-id]').forEach(c=>{
-    if(!incoming_ord.has(parseInt(c.dataset.orderId))) c.remove();
-  });
+  const incoming=new Set((G.orders||[]).map(o=>o.id));
+  el.querySelectorAll('[data-order-id]').forEach(c=>{ if(!incoming.has(parseInt(c.dataset.orderId)))c.remove(); });
   if(!G.orders?.length){
-    el.innerHTML=G.state?.is_open ? `...waiting...` : `...closed...`;
+    if(!el.querySelector('[data-order-id]')) el.innerHTML=G.state?.is_open
+      ?`<div class="empty-state"><div class="empty-icon">🛎</div>Waiting for customers…</div>`
+      :`<div class="empty-state"><div class="empty-icon">🔐</div>Open the store to get orders.</div>`;
     return;
   }
   const existing=new Set([...el.querySelectorAll('[data-order-id]')].map(c=>parseInt(c.dataset.orderId)));
   G.orders.forEach(o=>{ if(!existing.has(o.id)) el.appendChild(buildOrderCard(o)); });
-  if(el.querySelectorAll('[data-order-id]').length===0) G.orders.forEach(o=>el.appendChild(buildOrderCard(o)));
 }
 
 function buildOrderCard(o) {
@@ -677,15 +671,14 @@ function renderReportsTab() {
 }
 
 // ── Notifications ─────────────────────────────────────────────────────────────
+let _lastReadEventId = parseInt(sessionStorage.getItem('lastReadEventId') || '0');
+
 function renderNotificationBadge(){
   const badge=$('notif-badge');
   if (!badge) return;
-  const total = G.event_log?.length || 0;
-  // Count only important unread events (level-ups, hires, course completions)
-  const important = ['success','warning'];
-  const unread = (G.event_log || [])
-    .slice(0, total - _lastReadLogCount)
-    .filter(e => important.includes(e.log_type)).length;
+  const unread = (G.event_log||[]).filter(e =>
+    e.id > _lastReadEventId && ['success','warning','error'].includes(e.log_type)
+  ).length;
   if (unread > 0) {
     badge.textContent = unread > 9 ? '9+' : unread;
     badge.style.display = 'flex';
@@ -697,7 +690,10 @@ function toggleNotifications(){
   const panel=$('notif-panel'); if(!panel) return;
   const open=panel.classList.toggle('open');
   if(open&&G.event_log){
-    _lastReadLogCount = G.event_log.length;
+    const maxId = Math.max(0, ...(G.event_log.map(e=>e.id)));
+    _lastReadEventId = maxId;
+    sessionStorage.setItem('lastReadEventId', maxId);
+    renderNotificationBadge();
     panel.innerHTML=`<div class="notif-header"><strong>Activity Log</strong>
       <button class="btn btn-secondary btn-sm" onclick="toggleNotifications()">✕</button></div>
       <div class="notif-list">${G.event_log.map(e=>`<div class="notif-item ${e.log_type}">

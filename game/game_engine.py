@@ -510,12 +510,12 @@ def _waiter_bump_urgent():
 
 
 def _worker_fulfill_order(worker, state):
-    # Bakers in orders_only/casual only serve if there's matching stock
+    # Bakers: skip entirely if no stock at all
     if worker.role == 'baker':
-        has_stock = BakedCake.objects.filter(
-            game_state=state, is_baking=False, remaining_slices__gt=0).exists()
-        if not has_stock:
+        if not BakedCake.objects.filter(
+                game_state=state, is_baking=False, remaining_slices__gt=0).exists():
             return None
+
     orders = (CustomerOrder.objects
               .filter(game_state=state, status='pending')
               .select_related('recipe')
@@ -536,7 +536,7 @@ def _worker_fulfill_order(worker, state):
         orders_list = list(orders)
 
     for order in orders_list:
-    # Quick stock check before hitting fulfill_order's transaction
+        # Per-order stock check before hitting the transaction
         if order.quantity > 0:
             has_stock = BakedCake.objects.filter(
                 game_state=state, recipe=order.recipe, size=order.size,
@@ -556,7 +556,6 @@ def _worker_fulfill_order(worker, state):
                 xp += 7
             return award_worker_xp(worker, xp)
     return None
-
 
 def _auto_bake(worker, state, force_recipe=None):
     if not worker.assigned_oven_id:
@@ -1030,14 +1029,16 @@ def _generate_hire_pool():
     pool = pool[:pool_size]
 
     if day <= 10:
-        role_weights = {'baker': 55, 'cashier': 30, 'waiter': 10, 'manager': 5}
+        role_weights = {'baker': 50, 'cashier': 30, 'waiter': 15, 'manager': 5}
     else:
-        role_weights = {'baker': 45, 'cashier': 20, 'waiter': 20, 'manager': 15}
-    role_pool = random.choices(list(role_weights.keys()), weights=list(role_weights.values()), k=1)[0]
+        role_weights = {'baker': 40, 'cashier': 20, 'waiter': 20, 'manager': 10}
 
     for name in pool:
         star  = random.choices(stars, weights=weights, k=1)[0]
-        role  = random.choice(role_pool)
+        role  = random.choices(
+            list(role_weights.keys()),
+            weights=list(role_weights.values()), k=1
+        )[0]
 
         skill_id, skill_rarity = _pick_skill_for_role(role, star)
 
