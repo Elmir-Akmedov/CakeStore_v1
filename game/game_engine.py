@@ -759,7 +759,7 @@ def _expire_orders():
 #  BAKING
 # ══════════════════════════════════════════════════════════════════
 
-def start_baking(recipe_id, size, oven_id, speed_penalty=1.0):
+def start_baking(recipe_id, size, oven_id, speed_penalty=1.0, manual_result=None):
     recipe = validate_recipe(recipe_id)
     oven   = validate_oven(oven_id)
     validate_size(size)
@@ -803,7 +803,10 @@ def start_baking(recipe_id, size, oven_id, speed_penalty=1.0):
             oven=oven, day_baked=s.day,
             ingredient_cost=D(ingredient_cost),
         )
-
+    if manual_result:
+        mult = {'perfect':1.15,'good':1.0,'underbaked':0.90,'burnt':0.70}.get(manual_result,1.0)
+        cake.manual_result_mult = mult
+        cake.save(update_fields=['manual_result_mult'])
     log_event('🔥', f'Baking {recipe.name} ({size}) — {duration}s',
               log_type='info', day=state.day)
     return {
@@ -885,6 +888,13 @@ def fulfill_order(order_id):
             needed -= take
 
         revenue = order.calculate_revenue(s)
+        # apply manual baking result multiplier if present
+        cakes_used = BakedCake.objects.filter(
+            game_state=state, recipe=order.recipe,
+            is_baking=False, manual_result_mult__lt=1.0
+        ).first()
+        if cakes_used:
+            revenue = round(revenue * cakes_used.manual_result_mult, 2)
 
         if (s.active_event or {}).get('id') == 'blogger' and s.event_counter < 5:
             revenue *= 2

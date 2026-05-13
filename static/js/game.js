@@ -15,6 +15,33 @@ let pollTimer    = null;
 let animFrame    = null;
 let selectedOven = null;
 const lockedWorkers = new Set();
+const POSITIVE_TRAITS = {
+  fast_learner:  {name:'Fast Learner',  icon:'⚡', desc:'Gains skill XP 30% faster'},
+  perfectionist: {name:'Perfectionist', icon:'🎯', desc:'Perfect zone 20% more likely'},
+  team_player:   {name:'Team Player',   icon:'🤝', desc:'Adjacent workers +5% speed'},
+  early_bird:    {name:'Early Bird',    icon:'🌅', desc:'First 2 orders 20% faster'},
+  cool_head:     {name:'Cool Head',     icon:'🧊', desc:'No penalty in rush hour'},
+  innovative:    {name:'Innovative',    icon:'💡', desc:'Discovers new deco options'},
+  loyal:         {name:'Loyal',         icon:'💛', desc:'Salary never increases'},
+  energetic:     {name:'Energetic',     icon:'⚡', desc:'Serves 1 extra customer/tick'},
+};
+const NEGATIVE_TRAITS = {
+  clumsy:          {name:'Clumsy',          icon:'🤕', desc:'10% chance drops ingredient'},
+  slow_starter:    {name:'Slow Starter',    icon:'🐢', desc:'First 30s at -20% speed'},
+  picky:           {name:'Picky',           icon:'😤', desc:'Refuses certain recipe types'},
+  forgetful:       {name:'Forgetful',       icon:'😶', desc:'1% chance misses an order'},
+  expensive_taste: {name:'Expensive Taste', icon:'💸', desc:'Demands raise every 5 days'},
+  distracted:      {name:'Distracted',      icon:'😵', desc:'5% chance idles 5 seconds'},
+  overconfident:   {name:'Overconfident',   icon:'😎', desc:'Ignores instructions 10%'},
+  sensitive:       {name:'Sensitive',       icon:'😢', desc:'-2 morale per expired order'},
+};
+const ROLE_SKILLS = {
+  baker:   ['mixing_technique','dough_shaping','decoration_eye','oven_instinct','recipe_memory'],
+  cashier: ['quick_service','charm','upselling','cash_handling','regular_memory'],
+  waiter:  ['floor_reading','presentation','conflict_resolution','speed_walking','sommelier_eye'],
+  manager: ['staff_motivation','cost_control','scheduling','talent_eye','crisis_management'],
+};
+const SKILL_MASTERY_NAMES = {1:'Novice',2:'Apprentice',3:'Skilled',4:'Expert',5:'Master'};
 
 // day-end ISO string for the timer
 let _dayEndAt = null;
@@ -49,6 +76,8 @@ function toast(msg, type='info') {
 function showScreen(id) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   $(id).classList.add('active');
+  if (id !== 'screen-game') stopCafeScene();
+  else if (typeof initCafeScene !== 'undefined') initCafeScene();
 }
 
 function switchTab(groupId, tabId) {
@@ -57,6 +86,49 @@ function switchTab(groupId, tabId) {
     b.classList.toggle('active', b.dataset.tab === tabId));
   panel.querySelectorAll('.tab-content').forEach(c =>
     c.classList.toggle('active', c.id === tabId));
+}
+
+function showPopup(html) {
+  const overlay = $('popup-overlay');
+  const inner   = $('popup-inner');
+  if (!overlay || !inner) return;
+  inner.innerHTML = html;
+  overlay.style.display = 'flex';
+}
+
+function closePopup() {
+  const overlay = $('popup-overlay');
+  if (overlay) overlay.style.display = 'none';
+  const $inner = $('popup-inner');
+  if ($inner) $inner.innerHTML = '';
+}
+
+function openKitchenPopup() {
+  const ovens = G.ovens || [];
+  const html = `
+  <div style="background:var(--surface);min-width:340px;max-width:480px;">
+    <div style="background:var(--gold2);padding:6px 12px;font-size:11px;font-weight:700;color:#1a0f06;display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid var(--border-dark);">
+      🍳 Kitchen — Active Ovens
+      <button class="btn btn-danger btn-sm" onclick="closePopup()">✕</button>
+    </div>
+    <div style="padding:8px;display:flex;flex-direction:column;gap:6px;max-height:360px;overflow-y:auto;">
+      ${ovens.length ? ovens.map(ov => {
+        const cake = ov.current_cake;
+        const baker = ov.baker;
+        return `<div style="background:var(--surface2);padding:8px;border-top:2px solid var(--border-light);border-left:2px solid var(--border-light);border-right:2px solid var(--border-dark);border-bottom:2px solid var(--border-dark);">
+          <div style="font-weight:700;font-size:10px;color:var(--gold);">🔥 ${ov.name} <span style="color:var(--cream-dim);font-weight:400;">×${ov.speed_bonus}</span></div>
+          ${baker ? `<div style="font-size:9px;color:var(--cream-dim);margin-top:2px;">👨‍🍳 ${baker.name} · Lv.${baker.level}</div>` : '<div style="font-size:9px;color:var(--red);">No baker assigned</div>'}
+          ${cake ? `
+            <div style="font-size:9px;margin-top:4px;">${cake.emoji} ${cake.recipe_name} (${cake.size})</div>
+            <div style="height:6px;background:var(--border-dark);margin-top:3px;">
+              <div style="height:100%;width:${cake.progress_pct}%;background:var(--gold2);"></div>
+            </div>` : `<div style="font-size:9px;color:var(--green2);margin-top:4px;">✅ Ready to bake</div>
+            <button class="btn btn-warning btn-sm" style="margin-top:4px;font-size:9px;" onclick="closePopup();openBakeModal(${ov.id})">🍰 Bake</button>`}
+        </div>`;
+      }).join('') : '<div style="color:var(--cream-dim);font-size:10px;padding:8px;">No ovens found.</div>'}
+    </div>
+  </div>`;
+  showPopup(html);
 }
 
 // ── Tooltip (Fix 3: 250ms delay) ─────────────────────────────────────────────
@@ -234,6 +306,7 @@ function render() {
   renderRecipeShop();   // Issue 2: called after G is populated
   renderReportsTab();
   renderNotificationBadge();
+  updateCafeScene(G);
 }
 
 // ── Top Bar ───────────────────────────────────────────────────────────────────
@@ -448,34 +521,16 @@ function roleDesc(role) {
 }
 
 function buildWorkerCard(w, recipeOpts, ovenOpts) {
-  const stars=Array.from({length:3},(_,i)=>
-    `<span style="color:${i<w.skill_level?'var(--accent2)':'var(--border)'}">★</span>`).join('');
-  const sizeMap={1:'Small',2:'S+M',3:'All'};
-  const [bg,fg]=AVATAR_COLORS[w.id%AVATAR_COLORS.length];
-  const roleIcon=workerRoleIcon(w.role);
-  const si=w.skill_info;
+  const [bg] = AVATAR_COLORS[w.id % AVATAR_COLORS.length];
+  const roleIcon = workerRoleIcon(w.role);
+  const si = w.skill_info;
+  const morale = w.morale ?? 70;
+  const moraleColor = morale >= 80 ? 'var(--green2)' : morale >= 50 ? 'var(--gold2)' : 'var(--red)';
+  const moraleEmoji = morale >= 80 ? '😊' : morale >= 50 ? '😐' : '😟';
+  const posT = w.positive_trait ? POSITIVE_TRAITS[w.positive_trait] : null;
+  const negT = w.negative_trait ? NEGATIVE_TRAITS[w.negative_trait] : null;
 
-  const xpTip=w.xp_for_next_level
-    ?`${w.experience}/${w.xp_for_next_level} XP to Level ${w.level+1}`:'Max level';
-  const xpBar=`<div class="xp-row" data-tip="${xpTip}">
-    <span class="xp-label">Lv.${w.level}</span>
-    <div class="xp-bar-wrap"><div class="xp-bar-fill" style="width:${w.xp_progress_pct}%"></div></div>
-    <span class="xp-label">${w.experience}xp</span></div>`;
-
-  let courseHtml = '';
-  if (w.course_finish_day) {
-    const daysLeft = w.course_finish_day - (G.state?.day||1);
-    courseHtml = `<div class="course-active-badge">📚 Upgrading → ${w.course_target_rarity} (${daysLeft}d)</div>`;
-  } else if (si && si.rarity !== 'legendary' && si.rarity !== 'unique') {
-    const costs=G.course_costs||{};
-    const key=`${si.rarity}_to_${nextRarity(si.rarity)}`;
-    const cfg=costs[key];
-    if (cfg) {
-      courseHtml = `<button class="btn btn-info btn-sm" style="margin-top:0.3rem;font-size:0.72rem"
-        data-tip="Send ${w.name} on a course — ${cfg.days} days, ${fmt(cfg.cost)}"
-        onclick="startCourse(${w.id})">📚 Course ${fmt(cfg.cost)}</button>`;
-    }
-  }
+  const xpTip = w.xp_for_next_level ? `${w.experience}/${w.xp_for_next_level} XP to Level ${w.level+1}` : 'Max level';
 
   let controls = '';
   if (w.role === 'baker') {
@@ -494,12 +549,25 @@ function buildWorkerCard(w, recipeOpts, ovenOpts) {
         <option value="">No oven</option>${ovenOpts}
       </select>
     </div>`;
-  } else if (w.role === 'cashier') {
-    controls = `<div class="worker-cashier-status">💳 Auto-fulfills orders</div>`;
-  } else if (w.role === 'waiter') {
-    controls = `<div class="worker-cashier-status">🍽️ Passive buffs active</div>`;
-  } else if (w.role === 'manager') {
-    controls = `<div class="worker-cashier-status">📋 Store-wide buffs active</div>`;
+  } else {
+    const statusMap = {
+      cashier: '💳 Auto-fulfills orders',
+      waiter:  '🍽️ Passive buffs active',
+      manager: '📋 Store-wide buffs active',
+    };
+    controls = `<div class="worker-cashier-status">${statusMap[w.role]||''}</div>`;
+  }
+
+  let courseHtml = '';
+  if (w.course_finish_day) {
+    const daysLeft = w.course_finish_day - (G.state?.day||1);
+    courseHtml = `<div class="course-active-badge">📚 Upgrading → ${w.course_target_rarity} (${daysLeft}d)</div>`;
+  } else if (si && si.rarity !== 'legendary' && si.rarity !== 'unique') {
+    const key = `${si.rarity}_to_${nextRarity(si.rarity)}`;
+    const cfg = (G.course_costs||{})[key];
+    if (cfg) courseHtml = `<button class="btn btn-info btn-sm" style="margin-top:0.3rem;font-size:0.72rem"
+      data-tip="Course: ${cfg.days} days, ${fmt(cfg.cost)}"
+      onclick="startCourse(${w.id})">📚 Course ${fmt(cfg.cost)}</button>`;
   }
 
   return `
@@ -513,17 +581,33 @@ function buildWorkerCard(w, recipeOpts, ovenOpts) {
       <div class="worker-name-row">
         <span class="worker-name" onclick="openWorkerDetail(${w.id})">${w.name}</span>
         <span class="worker-role-badge ${w.role}">${w.role}</span>
+        <span style="font-size:10px;margin-left:auto;">${moraleEmoji}</span>
       </div>
-      <div style="font-size:0.75rem;color:var(--muted)">
-        ${fmt(w.salary_per_day)}/day &nbsp;${stars}&nbsp;
-        <span style="color:var(--accent2);font-size:0.68rem">${sizeMap[w.skill_level]||''}</span>
+      <div style="font-size:0.75rem;color:var(--muted)">${fmt(w.salary_per_day)}/day</div>
+
+      <!-- Morale bar -->
+      <div style="display:flex;align-items:center;gap:4px;margin:2px 0;">
+        <span style="font-size:8px;color:var(--muted);">Morale</span>
+        <div style="flex:1;height:4px;background:var(--border-dark);">
+          <div style="width:${morale}%;height:100%;background:${moraleColor};"></div>
+        </div>
+        <span style="font-size:8px;color:${moraleColor};">${morale}</span>
       </div>
-      <div class="skill-tags">
-        ${w.role==='baker'?`<span class="skill-tag base">⚡ Bake ${w.bake_speed}</span>`:''}
-        <span class="skill-tag base">🤝 Svc ${w.service_speed}</span>
-        ${si?skillRarityBadge(si):''}
+
+      <!-- Traits -->
+      <div style="display:flex;gap:3px;flex-wrap:wrap;margin:2px 0;">
+        ${posT ? `<span style="font-size:8px;padding:1px 5px;background:rgba(90,138,60,.3);color:var(--green2);"
+          data-tip="${posT.desc}">${posT.icon} ${posT.name}</span>` : ''}
+        ${negT ? `<span style="font-size:8px;padding:1px 5px;background:rgba(139,32,32,.3);color:#e06060;"
+          data-tip="${negT.desc}">${negT.icon} ${negT.name}</span>` : ''}
       </div>
-      ${xpBar}
+
+      ${si ? skillRarityBadge(si) : ''}
+      <div class="xp-row" data-tip="${xpTip}">
+        <span class="xp-label">Lv.${w.level}</span>
+        <div class="xp-bar-wrap"><div class="xp-bar-fill" style="width:${w.xp_progress_pct}%"></div></div>
+        <span class="xp-label">${w.experience}xp</span>
+      </div>
       ${courseHtml}
       ${controls}
     </div>
@@ -743,47 +827,70 @@ async function confirmFire(){
 
 // ── Worker Detail Modal ───────────────────────────────────────────────────────
 function openWorkerDetail(workerId) {
-  const w=G.workers?.find(w=>w.id===workerId); if(!w) return;
-  const state=G.state||{};
-  const sizeMap={1:'Small only',2:'Small + Medium',3:'All sizes'};
-  const si=w.skill_info;
-  const [bg]=AVATAR_COLORS[w.id%AVATAR_COLORS.length];
-  const roleIcon=workerRoleIcon(w.role);
+  const w = G.workers?.find(w => w.id === workerId); if (!w) return;
+  const si = w.skill_info;
+  const [bg] = AVATAR_COLORS[w.id % AVATAR_COLORS.length];
+  const morale = w.morale ?? 70;
+  const moraleColor = morale >= 80 ? 'var(--green2)' : morale >= 50 ? 'var(--gold2)' : 'var(--red)';
+  const posT = w.positive_trait ? POSITIVE_TRAITS[w.positive_trait] : null;
+  const negT = w.negative_trait ? NEGATIVE_TRAITS[w.negative_trait] : null;
+  const mastery = w.skill_mastery || {};
+  const roleSkills = ROLE_SKILLS[w.role] || [];
 
-  const xpNeeded=w.xp_for_next_level?w.xp_for_next_level-w.experience:0;
-  const nextLvl=w.level>=10?'Max level':`${xpNeeded} XP to Level ${w.level+1}`;
-
-  $('worker-detail-body').innerHTML=`
-    <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1.25rem">
-      <div style="width:56px;height:56px;border-radius:50%;background:${bg};display:flex;align-items:center;justify-content:center;font-size:1.6rem;box-shadow:0 2px 8px rgba(0,0,0,0.3);flex-shrink:0">${roleIcon}</div>
+  $('worker-detail-body').innerHTML = `
+    <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1rem;">
+      <div style="width:56px;height:56px;border-radius:50%;background:${bg};display:flex;align-items:center;justify-content:center;font-size:1.6rem;flex-shrink:0;">${workerRoleIcon(w.role)}</div>
       <div>
-        <div style="font-size:1.2rem;font-weight:800">${w.name}</div>
-        <div style="font-size:0.82rem;color:var(--muted);text-transform:capitalize">${w.role}</div>
-        <div style="font-size:0.82rem;color:var(--accent2)">${fmt(w.salary_per_day)}/day salary</div>
+        <div style="font-size:1.1rem;font-weight:800;">${w.name}</div>
+        <div style="font-size:0.8rem;color:var(--muted);text-transform:capitalize;">${w.role} · ${fmt(w.salary_per_day)}/day</div>
+        <div style="font-size:0.8rem;color:${moraleColor};margin-top:2px;">Morale ${morale}/100</div>
       </div>
     </div>
+
+    <div class="detail-section">
+      <div class="detail-label">Personality Traits</div>
+      ${posT ? `<div class="detail-row" style="color:var(--green2);">${posT.icon} <strong>${posT.name}</strong> — ${posT.desc}</div>` : '<div class="detail-row" style="color:var(--muted);">No trait assigned yet</div>'}
+      ${negT ? `<div class="detail-row" style="color:#e06060;">${negT.icon} <strong>${negT.name}</strong> — ${negT.desc}</div>` : ''}
+    </div>
+
+    <div class="detail-section">
+      <div class="detail-label">Skill Mastery</div>
+      ${roleSkills.map(sk => {
+        const lvl = mastery[sk] || 0;
+        const name = sk.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
+        const mastName = SKILL_MASTERY_NAMES[lvl] || 'Locked';
+        return `<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+          <span style="font-size:9px;width:120px;color:var(--muted);">${name}</span>
+          <div style="flex:1;height:5px;background:var(--border-dark);">
+            <div style="width:${lvl*20}%;height:100%;background:var(--gold2);"></div>
+          </div>
+          <span style="font-size:8px;color:${lvl>=5?'var(--gold)':'var(--muted)'};width:64px;">${mastName}</span>
+        </div>`;
+      }).join('')}
+    </div>
+
     <div class="detail-section">
       <div class="detail-label">Level & XP</div>
-      <div class="detail-row">Level <strong>${w.level}</strong>/10 · ${w.experience} XP</div>
-      <div class="xp-row" style="margin:0.4rem 0">
+      <div class="xp-row">
         <span class="xp-label">Lv.${w.level}</span>
         <div class="xp-bar-wrap" style="flex:1"><div class="xp-bar-fill" style="width:${w.xp_progress_pct}%"></div></div>
         <span class="xp-label">Lv.${Math.min(w.level+1,10)}</span>
       </div>
-      <div class="detail-row" style="color:var(--muted)">${nextLvl}</div>
+      ${si ? `<div style="margin-top:4px;">${skillRarityBadge(si)}</div>` : ''}
     </div>
+
     <div class="detail-section">
-      <div class="detail-label">Skills</div>
-      ${w.role==='baker'?`<div class="detail-row">⚡ Bake Speed <strong>${w.bake_speed}/5</strong></div>`:''}
-      <div class="detail-row">🤝 Service <strong>${w.service_speed}/5</strong></div>
-      <div class="detail-row">🎯 Star <strong>${'★'.repeat(w.skill_level)}</strong> — ${sizeMap[w.skill_level]||''}</div>
-      ${si?`<div class="detail-row">${skillRarityBadge(si)}</div>`:''}
-    </div>
-    <div class="detail-section">
-      <div class="detail-label">Employment</div>
-      <div class="detail-row">Hired Day <strong>${w.hired_on_day||'?'}</strong></div>
-      <div class="detail-row">Days employed: <strong>${state.day-(w.hired_on_day||state.day)}</strong></div>
+      <div class="detail-label">Minigame Bonus (baker only)</div>
+      ${w.role==='baker' ? (() => {
+        const lvl = mastery['oven_instinct'] || 0;
+        const slowPct = [0,5,15,30,45][lvl] || 0;
+        const widePct = [0,10,25,40,60][lvl] || 0;
+        return `<div class="detail-row">🕐 Clock speed: <strong style="color:var(--gold);">−${slowPct}% slower</strong></div>
+                <div class="detail-row">🎯 Perfect zone: <strong style="color:var(--gold);">+${widePct}% wider</strong></div>
+                ${lvl>=5?'<div class="detail-row" style="color:var(--green2);">⭐ Auto-pull cake at perfect!</div>':''}`;
+      })() : '<div class="detail-row" style="color:var(--muted);">N/A</div>'}
     </div>`;
+
   $('worker-detail-modal').classList.add('open');
 }
 function closeWorkerDetail(){$('worker-detail-modal').classList.remove('open');}
@@ -799,6 +906,8 @@ function openHireModal(){
       const stars=Array.from({length:3},(_,i)=>`<span style="color:${i<hw.skill_level?'#f5a623':'#2a2a4a'}">★</span>`).join('');
       const icon=workerRoleIcon(hw.role);
       const si=hw.skill_info;
+      const posT = hw.positive_trait ? POSITIVE_TRAITS[hw.positive_trait] : null;
+      const negT = hw.negative_trait ? NEGATIVE_TRAITS[hw.negative_trait] : null;
       const daysLeft=hw.expires_on_day-(G.state?.day||1);
       const [bg]=AVATAR_COLORS[hw.id%AVATAR_COLORS.length];
       const rarityColor=si?si.rarity_color:'#888';
@@ -811,6 +920,8 @@ function openHireModal(){
           <div class="hire-pool-name">${hw.name}</div>
           <div style="font-size:0.75rem;color:var(--muted);text-transform:capitalize;margin-bottom:0.2rem">${hw.role}</div>
           <div class="skill-tags">
+            ${posT ? `<span style="font-size:8px;padding:1px 4px;background:rgba(90,138,60,.3);color:var(--green2);" data-tip="${posT.desc}">${posT.icon} ${posT.name}</span>` : ''}
+            ${negT ? `<span style="font-size:8px;padding:1px 4px;background:rgba(139,32,32,.3);color:#e06060;" data-tip="${negT.desc}">${negT.icon} ${negT.name}</span>` : ''}
             ${hw.role==='baker'?`<span class="skill-tag base">⚡ Bake ${hw.bake_speed}</span>`:''}
             <span class="skill-tag base">🤝 Svc ${hw.service_speed}</span>
             ${si?`<span class="skill-tag" style="background:${rarityColor}22;color:${rarityColor};border:1px solid ${rarityColor}44"
@@ -838,48 +949,438 @@ async function hireFromPool(hwId,btn){
   else{toast(r.message,'error');btn.disabled=false;btn.textContent='Hire';}
 }
 
-// ── Bake Modal (Issue 1: fallback when no recipes) ────────────────────────────
-function openBakeModal(ovenId){
-  selectedOven=ovenId;
-  const oven=G.ovens?.find(o=>o.id===ovenId);
-  $('bake-modal-title').textContent=`🔥 Bake — ${oven?oven.name:''}`;
+// ── Baking Minigame ───────────────────────────────────────────────────────────
+let _bakeState = {};
 
-  // Issue 1: filter unlocked recipes
-  const unlocked=(G.recipes||[]).filter(r=>r.is_unlocked);
-  const noRecipesEl=$('bake-no-recipes');
-  const recipeGroupEl=$('bake-recipe-group');
-  const confirmBtn=$('bake-confirm-btn');
+function openBakeModal(ovenId) {
+  const oven = G.ovens?.find(o => o.id === ovenId);
+  if (!oven) return;
 
-  if(!unlocked.length) {
-    if(noRecipesEl) noRecipesEl.style.display='block';
-    if(recipeGroupEl) recipeGroupEl.style.display='none';
-    if(confirmBtn) confirmBtn.disabled=true;
-  } else {
-    if(noRecipesEl) noRecipesEl.style.display='none';
-    if(recipeGroupEl) recipeGroupEl.style.display='flex';
-    if(confirmBtn) confirmBtn.disabled=false;
-    $('bake-recipe-select').innerHTML=unlocked.map(r=>`<option value="${r.id}">${r.emoji} ${r.name}</option>`).join('');
+  // Option B: worker already baking — show clock only
+  if (oven.is_busy && oven.current_cake) {
+    openOvenClock(ovenId, oven.current_cake);
+    return;
   }
 
-  updateBakePreview();
-  $('bake-modal').classList.add('open');
+  // Option A: free oven — full minigame
+  const unlocked = (G.recipes || []).filter(r => r.is_unlocked);
+  if (!unlocked.length) { toast('No recipes unlocked yet.', 'error'); return; }
+
+  _bakeState = {
+    ovenId, step: 1,
+    recipe: unlocked[0],
+    size: 'Medium',
+    shape: null,
+    decos: [],
+    mixAdded: [],
+    bonuses: { mix: false, shape: 0, deco: 0, oven: null },
+  };
+
+  showPopup(buildBakePopupHtml());
+  setupMixStep();
 }
-function closeBakeModal(){$('bake-modal').classList.remove('open');selectedOven=null;}
-function updateBakePreview(){
-  const r=G.recipes?.find(r=>r.id===parseInt($('bake-recipe-select').value));
-  if(!r){$('bake-preview').innerHTML='';return;}
-  const size=$('bake-size-select').value,price=r.prices[size];
-  $('bake-preview').innerHTML=`<div style="display:flex;justify-content:space-between;font-size:0.85rem;gap:1rem">
-    <span>Sell: <strong style="color:var(--accent2)">${fmt(price)}</strong></span>
-    <span>Cost: <strong style="color:var(--accent)">${fmt((price*0.30).toFixed(2))}</strong></span>
-    <span>Time: <strong>${r.bake_seconds[size]}s</strong></span></div>`;
+
+function buildBakePopupHtml() {
+  const r = _bakeState.recipe;
+  const unlocked = (G.recipes || []).filter(r => r.is_unlocked);
+  return `
+  <div style="background:var(--surface);width:560px;display:flex;flex-direction:column;" id="bake-popup">
+    <div style="background:var(--gold2);padding:6px 12px;font-size:11px;font-weight:700;color:#1a0f06;display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid var(--border-dark);">
+      🔥 Bake — ${G.ovens?.find(o=>o.id===_bakeState.ovenId)?.name||'Oven'}
+      <button class="btn btn-danger btn-sm" onclick="closePopup()">✕</button>
+    </div>
+
+    <!-- Step tabs -->
+    <div style="display:flex;border-bottom:2px solid var(--border-dark);" id="bake-steps">
+      ${[['1','🍫','Mix'],['2','🔵','Shape'],['3','🎨','Deco'],['4','🔥','Oven']].map(([n,ic,lb])=>`
+        <div id="bstep-${n}" style="flex:1;text-align:center;padding:5px 2px;font-size:8px;text-transform:uppercase;
+          background:${n==='1'?'var(--gold)':'var(--surface2)'};color:${n==='1'?'#1a0f06':'var(--cream-dim)'};
+          font-weight:${n==='1'?'700':'400'};border-right:1px solid var(--border-dark);">${ic} ${lb}</div>`).join('')}
+    </div>
+
+    <div style="display:flex;height:280px;">
+      <!-- LEFT: ingredients/status -->
+      <div style="width:140px;background:var(--panel);border-right:2px solid var(--border-dark);padding:7px;display:flex;flex-direction:column;gap:4px;overflow-y:auto;" id="bake-left">
+        <div style="font-size:8px;text-transform:uppercase;letter-spacing:1px;color:var(--cream-dim);font-weight:700;">Recipe</div>
+        <select id="bake-recipe-sel" onchange="onBakeRecipeChange(this)" style="background:var(--surface2);border:none;color:var(--cream);font-size:9px;padding:3px;font-family:inherit;width:100%;">
+          ${unlocked.map(r=>`<option value="${r.id}">${r.emoji} ${r.name}</option>`).join('')}
+        </select>
+        <select id="bake-size-sel" onchange="onBakeSizeChange(this)" style="background:var(--surface2);border:none;color:var(--cream);font-size:9px;padding:3px;font-family:inherit;width:100%;">
+          <option value="Small">Small (4 slices)</option>
+          <option value="Medium" selected>Medium (8 slices)</option>
+          <option value="Large">Large (12 slices)</option>
+        </select>
+        <div style="border-top:1px solid var(--border-dark);padding-top:4px;margin-top:2px;">
+          <div style="font-size:8px;text-transform:uppercase;letter-spacing:1px;color:var(--cream-dim);font-weight:700;margin-bottom:3px;">Ingredients</div>
+          <div id="bake-ingr-list"></div>
+        </div>
+      </div>
+
+      <!-- CENTER -->
+      <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:10px;" id="bake-center">
+        <div id="bake-step-content"></div>
+      </div>
+
+      <!-- RIGHT: bonuses -->
+      <div style="width:130px;background:var(--panel);border-left:2px solid var(--border-dark);padding:7px;display:flex;flex-direction:column;gap:5px;">
+        <div style="font-size:8px;text-transform:uppercase;letter-spacing:1px;color:var(--cream-dim);font-weight:700;">Bonuses</div>
+        <div id="bake-bonus-mix"  style="font-size:8px;padding:2px 5px;background:var(--surface2);font-weight:700;">Mix: pending</div>
+        <div id="bake-bonus-shape" style="font-size:8px;padding:2px 5px;background:var(--surface2);font-weight:700;">Shape: ?</div>
+        <div id="bake-bonus-deco"  style="font-size:8px;padding:2px 5px;background:var(--surface2);font-weight:700;">Deco: +0%</div>
+        <div id="bake-bonus-oven"  style="font-size:8px;padding:2px 5px;background:var(--surface2);font-weight:700;">Oven: ?</div>
+        <div style="border-top:1px solid var(--border-dark);padding-top:4px;margin-top:auto;">
+          <div style="font-size:8px;color:var(--cream-dim);">Base price:</div>
+          <div style="font-size:10px;font-weight:700;color:var(--gold);" id="bake-base-price">-</div>
+        </div>
+      </div>
+    </div>
+  </div>`;
 }
-async function confirmBake(){
-  const recipeId=parseInt($('bake-recipe-select').value),size=$('bake-size-select').value;
-  if(!recipeId||!size||!selectedOven){toast('Pick recipe + size.','error');return;}
-  const r=await api('/api/bake/',{recipe_id:recipeId,size,oven_id:selectedOven});
-  if(r.ok){toast(r.message,'success');closeBakeModal();fetchState();}
-  else toast(r.message,'error');
+
+function updateBakeRecipeInfo() {
+  const r = _bakeState.recipe;
+  const size = _bakeState.size;
+  if (!r) return;
+  const price = r.prices?.[size] ?? r[`price_${size.toLowerCase()}`] ?? 0;
+  const el = document.getElementById('bake-base-price');
+  if (el) el.textContent = fmt(price);
+}
+
+function onBakeRecipeChange(sel) {
+  const r = G.recipes?.find(r => r.id === parseInt(sel.value));
+  if (r) { _bakeState.recipe = r; _bakeState.mixAdded = []; setupMixStep(); updateBakeRecipeInfo(); }
+}
+
+function onBakeSizeChange(sel) {
+  _bakeState.size = sel.value;
+  updateBakeRecipeInfo();
+}
+
+// ── Step 1: Mix ───────────────────────────────────────────────────────────────
+function setupMixStep() {
+  setBakeStep(1);
+  const r = _bakeState.recipe;
+  const ingrs = r?.ingredients || [];
+  _bakeState.mixAdded = [];
+
+  const listEl = document.getElementById('bake-ingr-list');
+  if (listEl) {
+    listEl.innerHTML = ingrs.map((ing, i) =>
+      `<div id="mingr-${i}" onclick="addIngredient(${i})" style="background:var(--surface2);padding:3px 5px;margin-bottom:2px;font-size:9px;cursor:pointer;transition:filter .1s;"
+        data-tip="Tap to add">${ing}</div>`).join('');
+  }
+
+  const center = document.getElementById('bake-step-content');
+  if (center) {
+    center.innerHTML = `
+      <canvas id="mix-bowl" width="130" height="80" style="image-rendering:pixelated;"></canvas>
+      <div style="font-size:9px;color:var(--cream-dim);text-align:center;" id="mix-hint">Tap ingredients in order to add them</div>
+      <button class="btn btn-warning btn-sm" id="mix-next-btn" disabled onclick="goToStep(2)" style="font-size:10px;">Next: Shape →</button>`;
+  }
+  drawMixBowl();
+  updateBakeRecipeInfo();
+}
+
+function drawMixBowl() {
+  const c = document.getElementById('mix-bowl'); if (!c) return;
+  const x = c.getContext('2d');
+  const ingrs = _bakeState.recipe?.ingredients || [];
+  x.clearRect(0,0,130,80);
+  x.fillStyle='#5c3a1e'; x.fillRect(15,30,100,42);
+  x.fillStyle='#3d2512'; x.fillRect(10,24,110,12);
+  const cols=['#3d1a0a','#d4c070','#ffd5aa','#f0e060','#ffffff88','#c07820'];
+  _bakeState.mixAdded.forEach((idx,i) => {
+    x.fillStyle=cols[idx%cols.length]; x.fillRect(18+i*16,36,14,22);
+  });
+  if (_bakeState.mixAdded.length) {
+    x.fillStyle='rgba(80,40,10,0.5)'; x.fillRect(16,36,98,28);
+  }
+  x.fillStyle='#f0c040'; x.font='7px "Segoe UI"'; x.textAlign='center';
+  x.fillText(`${_bakeState.mixAdded.length}/${ingrs.length} added`, 65, 78);
+}
+
+function addIngredient(idx) {
+  const ingrs = _bakeState.recipe?.ingredients || [];
+  const expected = _bakeState.mixAdded.length;
+  if (idx !== expected) {
+    const el = document.getElementById(`mingr-${idx}`);
+    if (el) { el.style.background='var(--red)'; setTimeout(()=>el.style.background='var(--surface2)',400); }
+    const hint = document.getElementById('mix-hint');
+    if (hint) hint.textContent = `⚠️ Wrong order! Need: ${ingrs[expected]}`;
+    return;
+  }
+  _bakeState.mixAdded.push(idx);
+  const el = document.getElementById(`mingr-${idx}`);
+  if (el) { el.style.background='var(--green)'; el.style.opacity='0.7'; el.onclick=null; }
+  const hint = document.getElementById('mix-hint');
+  if (_bakeState.mixAdded.length === ingrs.length) {
+    if (hint) hint.textContent = '✅ All mixed!';
+    const btn = document.getElementById('mix-next-btn');
+    if (btn) btn.disabled = false;
+    const bonusEl = document.getElementById('bake-bonus-mix');
+    if (bonusEl) { bonusEl.textContent='Mix: ✅ +0%'; bonusEl.style.background='var(--green)'; bonusEl.style.color='#fff'; }
+    _bakeState.bonuses.mix = true;
+  } else {
+    if (hint) hint.textContent = `Added (${_bakeState.mixAdded.length}/${ingrs.length})`;
+  }
+  drawMixBowl();
+}
+
+// ── Step 2: Shape ─────────────────────────────────────────────────────────────
+function setupShapeStep() {
+  const center = document.getElementById('bake-step-content');
+  if (!center) return;
+  center.innerHTML = `
+    <div style="font-size:10px;font-weight:700;color:var(--gold);margin-bottom:4px;">Choose a shape</div>
+    <div style="display:flex;gap:5px;justify-content:center;">
+      ${[['round','🔵','+5%'],['square','🟫','+3%'],['heart','❤️','+8%'],['star','⭐','+10%']].map(([s,ic,b])=>
+        `<div onclick="selectShape('${s}',this)" id="shape-${s}"
+          style="font-size:20px;padding:6px 9px;background:var(--surface2);cursor:pointer;
+          border-top:2px solid var(--border-light);border-left:2px solid var(--border-light);
+          border-right:2px solid var(--border-dark);border-bottom:2px solid var(--border-dark);"
+          data-tip="${ic} ${b} price bonus">${ic}</div>`).join('')}
+    </div>
+    <canvas id="shape-preview" width="120" height="70" style="image-rendering:pixelated;margin-top:6px;"></canvas>
+    <div style="font-size:9px;color:var(--cream-dim);" id="shape-hint">Pick a shape for a bonus</div>
+    <button class="btn btn-warning btn-sm" id="shape-next-btn" disabled onclick="goToStep(3)" style="font-size:10px;">Next: Decorate →</button>`;
+}
+
+function selectShape(shape, el) {
+  _bakeState.shape = shape;
+  document.querySelectorAll('[id^="shape-"]').forEach(e => e.style.background='var(--surface2)');
+  el.style.background = 'var(--gold2)';
+  const bonuses = {round:5, square:3, heart:8, star:10};
+  const pct = bonuses[shape];
+  document.getElementById('shape-hint').textContent = `${shape}: +${pct}% price bonus`;
+  const bonusEl = document.getElementById('bake-bonus-shape');
+  if (bonusEl) { bonusEl.textContent=`Shape: +${pct}%`; bonusEl.style.background='var(--gold2)'; bonusEl.style.color='#1a0f06'; }
+  _bakeState.bonuses.shape = pct;
+  document.getElementById('shape-next-btn').disabled = false;
+  drawShapePreview(shape);
+}
+
+function drawShapePreview(shape) {
+  const c = document.getElementById('shape-preview'); if (!c) return;
+  const x = c.getContext('2d');
+  x.clearRect(0,0,120,70);
+  x.fillStyle='#6b3a1a';
+  if (shape==='round') { x.beginPath(); x.ellipse(60,42,42,24,0,0,Math.PI*2); x.fill(); x.fillStyle='#8b5a2a'; x.beginPath(); x.ellipse(60,38,40,20,0,0,Math.PI*2); x.fill(); }
+  else if (shape==='square') { x.fillRect(18,22,84,40); x.fillStyle='#8b5a2a'; x.fillRect(20,22,80,34); }
+  else if (shape==='heart') { x.font='52px serif'; x.textAlign='center'; x.fillStyle='#8b2020'; x.fillText('❤',60,62); }
+  else if (shape==='star') { x.font='52px serif'; x.textAlign='center'; x.fillStyle='#c07820'; x.fillText('⭐',60,62); }
+}
+
+// ── Step 3: Decorate ──────────────────────────────────────────────────────────
+function setupDecoStep() {
+  _bakeState.decos = [];
+  const center = document.getElementById('bake-step-content');
+  if (!center) return;
+  center.innerHTML = `
+    <div style="font-size:10px;font-weight:700;color:var(--gold);margin-bottom:4px;">Add decorations (up to 2)</div>
+    <canvas id="deco-preview" width="130" height="80" style="image-rendering:pixelated;margin-bottom:4px;"></canvas>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:3px;width:200px;">
+      ${['🍓','🍫','🌸','⭐','🍬','🥛','🍒','🌿'].map(d=>
+        `<div onclick="toggleDeco('${d}',this)"
+          style="font-size:16px;padding:5px;background:var(--surface2);cursor:pointer;text-align:center;
+          border-top:2px solid var(--border-light);border-left:2px solid var(--border-light);
+          border-right:2px solid var(--border-dark);border-bottom:2px solid var(--border-dark);">${d}</div>`).join('')}
+    </div>
+    <div style="font-size:9px;color:var(--cream-dim);margin-top:4px;" id="deco-hint">Each decoration +5% price</div>
+    <button class="btn btn-success btn-sm" onclick="goToStep(4)" style="font-size:10px;margin-top:4px;">🔥 Send to Oven →</button>`;
+  drawDecoPreview();
+}
+
+function toggleDeco(d, el) {
+  if (_bakeState.decos.includes(d)) {
+    _bakeState.decos = _bakeState.decos.filter(x=>x!==d);
+    el.style.background='var(--surface2)';
+  } else {
+    if (_bakeState.decos.length >= 2) return;
+    _bakeState.decos.push(d);
+    el.style.background='var(--gold2)';
+  }
+  const pct = _bakeState.decos.length * 5;
+  const hint = document.getElementById('deco-hint');
+  if (hint) hint.textContent = `${_bakeState.decos.length}/2 selected — +${pct}% price bonus`;
+  const bonusEl = document.getElementById('bake-bonus-deco');
+  if (bonusEl) { bonusEl.textContent=`Deco: +${pct}%`; bonusEl.style.background='var(--blue)'; bonusEl.style.color='#fff'; }
+  _bakeState.bonuses.deco = pct;
+  drawDecoPreview();
+}
+
+function drawDecoPreview() {
+  const c = document.getElementById('deco-preview'); if (!c) return;
+  const x = c.getContext('2d');
+  x.clearRect(0,0,130,80);
+  x.fillStyle='#6b3a1a'; x.beginPath(); x.ellipse(65,48,52,26,0,0,Math.PI*2); x.fill();
+  x.fillStyle='#8b5a2a'; x.beginPath(); x.ellipse(65,42,50,22,0,0,Math.PI*2); x.fill();
+  x.fillStyle='#c07820'; x.beginPath(); x.ellipse(65,36,50,16,0,0,Math.PI*2); x.fill();
+  _bakeState.decos.forEach((d,i) => { x.font='14px serif'; x.textAlign='center'; x.fillText(d,35+i*28,34); });
+}
+
+// ── Step 4: Oven clock ────────────────────────────────────────────────────────
+let _clockEl=0, _clockTotal=180, _clockRunning=false, _clockDone=false, _clockRaf=null;
+const CLOCK_PERFECT=[0.50,0.65], CLOCK_GOOD=[0.33,0.80];
+
+function setupOvenStep() {
+  const center = document.getElementById('bake-step-content');
+  if (!center) return;
+
+  // apply worker oven_instinct mastery
+  const baker = G.ovens?.find(o=>o.id===_bakeState.ovenId)?.baker;
+  const mastery = baker?.skill_mastery?.oven_instinct || 0;
+  const speedMult = [1.0, 0.95, 0.85, 0.70, 0.55, 0][mastery];
+  const zoneBonus = [0, 0.02, 0.05, 0.10, 0.15, 0.20][mastery];
+  CLOCK_PERFECT[0] = Math.max(0.3, 0.50 - zoneBonus);
+  CLOCK_PERFECT[1] = Math.min(0.85, 0.65 + zoneBonus);
+  _clockTotal = Math.round(180 * speedMult);
+
+  // auto-complete at mastery 5
+  if (mastery >= 5) {
+    _bakeState.bonuses.oven = 'perfect';
+    updateOvenBonus('⭐ PERFECT! (Auto)', '#f0c040');
+    finishBake('perfect'); return;
+  }
+
+  center.innerHTML = `
+    <div style="font-size:10px;font-weight:700;color:var(--gold);">Pull it out in the golden zone!</div>
+    <canvas id="oven-clock" width="160" height="160" style="image-rendering:pixelated;"></canvas>
+    <button class="btn btn-success btn-sm" id="pull-btn" onclick="pullCake()" style="font-size:12px;padding:6px 20px;">🫳 Pull Cake!</button>
+    <div style="font-size:10px;font-weight:700;text-align:center;min-height:18px;" id="clock-result"></div>`;
+
+  _clockEl=0; _clockRunning=true; _clockDone=false;
+  if (_clockRaf) cancelAnimationFrame(_clockRaf);
+  animateClock();
+}
+
+function animateClock() {
+  if (_clockRunning && !_clockDone) {
+    _clockEl++;
+    if (_clockEl >= _clockTotal) _clockEl = _clockTotal;
+  }
+  drawClock(_clockEl / _clockTotal);
+  if (!_clockDone) _clockRaf = requestAnimationFrame(animateClock);
+}
+
+function drawClock(p) {
+  const c = document.getElementById('oven-clock'); if (!c) return;
+  const x = c.getContext('2d');
+  const cx=80,cy=80,r=68,s=-Math.PI/2;
+  x.clearRect(0,0,160,160);
+  x.fillStyle='#2d1b0e'; x.beginPath(); x.arc(cx,cy,r,0,Math.PI*2); x.fill();
+  x.strokeStyle='#8b6340'; x.lineWidth=4; x.beginPath(); x.arc(cx,cy,r,0,Math.PI*2); x.stroke();
+  // good zone
+  x.fillStyle='rgba(90,138,60,0.35)'; x.beginPath(); x.moveTo(cx,cy);
+  x.arc(cx,cy,r-6,s+CLOCK_GOOD[0]*Math.PI*2,s+CLOCK_GOOD[1]*Math.PI*2); x.fill();
+  // perfect zone
+  x.fillStyle='rgba(240,192,64,0.65)'; x.beginPath(); x.moveTo(cx,cy);
+  x.arc(cx,cy,r-6,s+CLOCK_PERFECT[0]*Math.PI*2,s+CLOCK_PERFECT[1]*Math.PI*2); x.fill();
+  // burnt sweep
+  if (p>CLOCK_GOOD[1]) {
+    const bp=(p-CLOCK_GOOD[1])/(1-CLOCK_GOOD[1]);
+    x.fillStyle=`rgba(139,32,32,${0.3+0.6*bp})`; x.beginPath(); x.moveTo(cx,cy);
+    x.arc(cx,cy,r-6,s+CLOCK_GOOD[1]*Math.PI*2,s+Math.min(p,1)*Math.PI*2); x.fill();
+  }
+  // ticks
+  for(let i=0;i<12;i++){
+    const a=s+i/12*Math.PI*2; x.strokeStyle='#6b4020'; x.lineWidth=2;
+    x.beginPath(); x.moveTo(cx+Math.cos(a)*(r-10),cy+Math.sin(a)*(r-10));
+    x.lineTo(cx+Math.cos(a)*(r-4),cy+Math.sin(a)*(r-4)); x.stroke();
+  }
+  // hand
+  const angle=s+p*Math.PI*2;
+  const hc=p>CLOCK_GOOD[1]?'#e94560':p>=CLOCK_PERFECT[0]&&p<=CLOCK_PERFECT[1]?'#f0c040':'#f5e6c8';
+  x.strokeStyle=hc; x.lineWidth=4;
+  x.beginPath(); x.moveTo(cx,cy); x.lineTo(cx+Math.cos(angle)*(r-10),cy+Math.sin(angle)*(r-10)); x.stroke();
+  x.fillStyle=hc; x.beginPath(); x.arc(cx,cy,6,0,Math.PI*2); x.fill();
+  // center label
+  x.textAlign='center';
+  if(p>=CLOCK_PERFECT[0]&&p<=CLOCK_PERFECT[1]){x.fillStyle='#f0c040';x.font='bold 11px "Segoe UI"';x.fillText('⭐ NOW!',cx,cy+4);}
+  else if(p>CLOCK_GOOD[1]){x.fillStyle='#e94560';x.font='bold 10px "Segoe UI"';x.fillText('🔥 BURNT!',cx,cy+4);}
+  else{const f=Math.max(0,Math.floor((CLOCK_PERFECT[0]-p)*_clockTotal));x.fillStyle='#c4a882';x.font='8px "Segoe UI"';x.fillText(f>0?`~${f}f to ⭐`:'Almost!',cx,cy+4);}
+}
+
+function pullCake() {
+  if (_clockDone) return;
+  _clockDone=true; _clockRunning=false;
+  const p=_clockEl/_clockTotal;
+  let result;
+  if(p<CLOCK_GOOD[0]) result='underbaked';
+  else if(p<CLOCK_PERFECT[0]) result='good';
+  else if(p<=CLOCK_PERFECT[1]) result='perfect';
+  else if(p<=CLOCK_GOOD[1]) result='good';
+  else result='burnt';
+  document.getElementById('pull-btn').disabled=true;
+  finishBake(result);
+}
+
+function updateOvenBonus(text, color) {
+  const el=document.getElementById('bake-bonus-oven');
+  if(el){el.textContent=`Oven: ${text}`;el.style.background=color;el.style.color=color==='#f0c040'?'#1a0f06':'#fff';}
+}
+
+async function finishBake(result) {
+  const msgs={perfect:'⭐ PERFECT! +15%',good:'✅ Good bake!',underbaked:'❄️ Underbaked −10%',burnt:'🔥 Burnt! −30%'};
+  const colors={perfect:'#f0c040',good:'var(--green2)',underbaked:'#3498db',burnt:'#e94560'};
+  const resultEl=document.getElementById('clock-result');
+  if(resultEl){resultEl.textContent=msgs[result];resultEl.style.color=colors[result];}
+  updateOvenBonus(msgs[result], colors[result]);
+
+  await new Promise(r=>setTimeout(r,800));
+
+  const r=await api('/api/bake/',{
+    recipe_id:_bakeState.recipe.id,
+    size:_bakeState.size,
+    oven_id:_bakeState.ovenId,
+    manual_result:result,
+  });
+  if(r.ok){toast(r.message,'success');closePopup();fetchState();}
+  else{toast(r.message,'error');}
+}
+
+// ── Step navigation ────────────────────────────────────────────────────────────
+function goToStep(n) {
+  setBakeStep(n);
+  if(n===2) setupShapeStep();
+  else if(n===3) setupDecoStep();
+  else if(n===4) setupOvenStep();
+}
+
+function setBakeStep(n) {
+  [1,2,3,4].forEach(i=>{
+    const el=document.getElementById(`bstep-${i}`);
+    if(!el)return;
+    if(i<n){el.style.background='var(--green)';el.style.color='#fff';el.style.fontWeight='400';}
+    else if(i===n){el.style.background='var(--gold)';el.style.color='#1a0f06';el.style.fontWeight='700';}
+    else{el.style.background='var(--surface2)';el.style.color='var(--cream-dim)';el.style.fontWeight='400';}
+  });
+  _bakeState.step=n;
+}
+
+// ── Option B: Clock only popup ─────────────────────────────────────────────────
+function openOvenClock(ovenId, cake) {
+  const secsLeft = Math.max(0, (new Date(cake.bake_finish_at) - Date.now())/1000);
+  const pStart = 1 - (secsLeft / cake.bake_duration_sec);
+
+  showPopup(`
+  <div style="background:var(--surface);width:320px;display:flex;flex-direction:column;">
+    <div style="background:var(--gold2);padding:6px 12px;font-size:11px;font-weight:700;color:#1a0f06;display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid var(--border-dark);">
+      🔥 Worker Baking — Take over timing
+      <button class="btn btn-danger btn-sm" onclick="closePopup()">✕</button>
+    </div>
+    <div style="padding:10px;display:flex;flex-direction:column;align-items:center;gap:8px;">
+      <div style="font-size:9px;color:var(--cream-dim);text-align:center;">Pull at the right moment for a bonus!</div>
+      <canvas id="oven-clock" width="160" height="160" style="image-rendering:pixelated;"></canvas>
+      <button class="btn btn-success btn-sm" id="pull-btn" onclick="pullCake()" style="font-size:12px;padding:6px 20px;">🫳 Pull Cake!</button>
+      <div style="font-size:10px;font-weight:700;text-align:center;min-height:18px;" id="clock-result"></div>
+    </div>
+  </div>`);
+
+  _bakeState = { ovenId, recipe: {id: cake.recipe_id}, size: cake.size };
+  _clockEl = Math.round(pStart * _clockTotal);
+  _clockRunning = true; _clockDone = false;
+  if(_clockRaf) cancelAnimationFrame(_clockRaf);
+  animateClock();
 }
 
 // ── Report ────────────────────────────────────────────────────────────────────
@@ -978,6 +1479,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (data.state?.game_started) {
       showScreen('screen-game');
       startPolling();
+      initCafeScene();
     } else {
       // Issue 6: always show start screen when no game running
       showScreen('screen-start');

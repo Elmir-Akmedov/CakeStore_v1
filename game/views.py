@@ -122,7 +122,8 @@ def api_bake(request):
     _inject_user(request)
     data = _body(request)
     return _run(engine.start_baking,
-                data.get('recipe_id'), data.get('size'), data.get('oven_id'))
+            data.get('recipe_id'), data.get('size'), data.get('oven_id'),
+            manual_result=data.get('manual_result'))
 
 
 @login_required

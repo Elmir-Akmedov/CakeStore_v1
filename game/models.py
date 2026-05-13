@@ -621,6 +621,8 @@ class BakedCake(models.Model):
     oven              = models.ForeignKey(Oven, null=True, blank=True, on_delete=models.SET_NULL, related_name='cakes')
     day_baked         = models.IntegerField(default=1)
     ingredient_cost   = models.DecimalField(max_digits=6, decimal_places=2, default=0)
+    manual_result_mult = models.FloatField(default=1.0)
+
 
     def __str__(self): return f"{self.recipe.name} ({self.size})"
 

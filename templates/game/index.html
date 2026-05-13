@@ -7,6 +7,7 @@
   <title>🎂 Cake Store Manager</title>
   <link rel="stylesheet" href="{% static 'css/style.css' %}">
 </head>
+<script src="{% static 'js/cafe-scene.js' %}"></script>
 <body>
 
 <!-- ── START ─────────────────────────────────────────────────────────────── -->
@@ -110,6 +111,8 @@
                 onclick="switchTab('left-tabs','tab-baking')">⏳ Baking</button>
         <button class="tab-btn" data-tab="tab-recipes"
                 onclick="switchTab('left-tabs','tab-recipes')">📖 Recipes</button>
+        <button class="tab-btn" data-tab="tab-kitchen"
+                onclick="openKitchenPopup()">🍳 Kitchen</button>
       </div>
       <div id="tab-ovens"   class="tab-content active"><div id="panel-ovens"></div></div>
       <div id="tab-baking"  class="tab-content"><div id="panel-baking"></div></div>
@@ -119,15 +122,23 @@
       </div>
     </div>
 
-    <!-- ── CENTRE: Shelf / Orders ───────────────────────────────────────── -->
-    <div class="panel">
+    <!-- ── CENTRE: Café Scene + Shelf/Orders ───────────────────────────── -->
+    <div class="panel" style="position:relative;">
       <div id="centre-tabs" class="tab-bar">
-        <button class="tab-btn active" data-tab="tab-inventory"
+        <button class="tab-btn active" data-tab="tab-cafe"
+                onclick="switchTab('centre-tabs','tab-cafe')">🏠 Café</button>
+        <button class="tab-btn" data-tab="tab-inventory"
                 onclick="switchTab('centre-tabs','tab-inventory')">🍰 Shelf</button>
         <button class="tab-btn" data-tab="tab-orders"
                 onclick="switchTab('centre-tabs','tab-orders')">🛎 Orders</button>
       </div>
-      <div id="tab-inventory" class="tab-content active"><div id="panel-inventory"></div></div>
+      <div id="tab-cafe" class="tab-content active" style="padding:0;overflow:hidden;">
+        <canvas id="cafe-canvas" width="640" height="460" style="display:block;image-rendering:pixelated;width:100%;height:100%;"></canvas>
+        <div id="popup-overlay" onclick="if(event.target===this)closePopup()" style="display:none;position:absolute;inset:0;background:rgba(8,4,2,.78);backdrop-filter:blur(3px);z-index:20;align-items:center;justify-content:center;">
+          <div id="popup-inner"></div>
+        </div>
+      </div>
+      <div id="tab-inventory" class="tab-content"><div id="panel-inventory"></div></div>
       <div id="tab-orders"    class="tab-content"><div id="panel-orders"></div></div>
     </div>
 
