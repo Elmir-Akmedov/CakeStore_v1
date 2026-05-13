@@ -140,6 +140,37 @@ CUSTOMER_TYPE_META = {
 WORKER_LEVEL_XP     = [0,20,50,100,180,300,480,700,1000,1400]
 WORKER_STAR_AT_LEVEL = {4:2, 8:3}
 
+POSITIVE_TRAITS = {
+    'fast_learner':  {'name':'Fast Learner',  'icon':'⚡', 'desc':'Gains skill XP 30% faster'},
+    'perfectionist': {'name':'Perfectionist', 'icon':'🎯', 'desc':'Perfect zone 20% more likely'},
+    'team_player':   {'name':'Team Player',   'icon':'🤝', 'desc':'Adjacent workers +5% speed'},
+    'early_bird':    {'name':'Early Bird',    'icon':'🌅', 'desc':'First 2 orders 20% faster'},
+    'cool_head':     {'name':'Cool Head',     'icon':'🧊', 'desc':'No penalty in rush hour'},
+    'innovative':    {'name':'Innovative',    'icon':'💡', 'desc':'Discovers new deco options'},
+    'loyal':         {'name':'Loyal',         'icon':'💛', 'desc':'Salary never increases'},
+    'energetic':     {'name':'Energetic',     'icon':'⚡', 'desc':'Serves 1 extra customer/tick'},
+}
+
+NEGATIVE_TRAITS = {
+    'clumsy':          {'name':'Clumsy',          'icon':'🤕', 'desc':'10% chance drops ingredient'},
+    'slow_starter':    {'name':'Slow Starter',    'icon':'🐢', 'desc':'First 30s at -20% speed'},
+    'picky':           {'name':'Picky',           'icon':'😤', 'desc':'Refuses certain recipe types'},
+    'forgetful':       {'name':'Forgetful',       'icon':'😶', 'desc':'1% chance misses an order'},
+    'expensive_taste': {'name':'Expensive Taste', 'icon':'💸', 'desc':'Demands raise every 5 days'},
+    'distracted':      {'name':'Distracted',      'icon':'😵', 'desc':'5% chance idles 5 seconds'},
+    'overconfident':   {'name':'Overconfident',   'icon':'😎', 'desc':'Ignores instructions 10%'},
+    'sensitive':       {'name':'Sensitive',       'icon':'😢', 'desc':'-2 morale per expired order'},
+}
+
+ROLE_SKILLS = {
+    'baker':   ['mixing_technique','dough_shaping','decoration_eye','oven_instinct','recipe_memory'],
+    'cashier': ['quick_service','charm','upselling','cash_handling','regular_memory'],
+    'waiter':  ['floor_reading','presentation','conflict_resolution','speed_walking','sommelier_eye'],
+    'manager': ['staff_motivation','cost_control','scheduling','talent_eye','crisis_management'],
+}
+
+SKILL_MASTERY_NAMES = {1:'Novice', 2:'Apprentice', 3:'Skilled', 4:'Expert', 5:'Master'}
+
 KITCHEN_UPGRADES = {
     'display_case':        {'name':'Display Case',        'emoji':'🏪','cost':300, 'desc':'Customers see fresh cakes — +10% order patience'},
     'commercial_fridge':   {'name':'Commercial Fridge',   'emoji':'❄️', 'cost':450, 'desc':'Cakes stay fresh for 2 days instead of 1'},
@@ -460,6 +491,10 @@ class Worker(models.Model):
     level          = models.IntegerField(default=1)
     course_target_rarity = models.CharField(max_length=20, blank=True, default='')
     course_finish_day    = models.IntegerField(null=True, blank=True)
+    positive_trait       = models.CharField(max_length=60, blank=True, default='')
+    negative_trait       = models.CharField(max_length=60, blank=True, default='')
+    skill_mastery        = models.JSONField(default=dict)
+    morale               = models.IntegerField(default=70)
 
     def __str__(self): return f"{self.name} ({self.role})"
 
@@ -516,6 +551,10 @@ class Worker(models.Model):
             'hired_on_day':self.hired_on_day,
             'course_target_rarity':self.course_target_rarity,
             'course_finish_day':self.course_finish_day,
+            'positive_trait': self.positive_trait,
+            'negative_trait': self.negative_trait,
+            'skill_mastery':  self.skill_mastery or {},
+            'morale':         self.morale,
         }
 
 
@@ -537,6 +576,8 @@ class HireableWorker(models.Model):
     available_from_day = models.IntegerField(default=1)
     expires_on_day     = models.IntegerField(default=4)
     is_hired           = models.BooleanField(default=False)
+    positive_trait = models.CharField(max_length=60, blank=True, default='')
+    negative_trait = models.CharField(max_length=60, blank=True, default='')
 
     def __str__(self): return f"{self.name} ({self.role}, ★{self.skill_level})"
 
@@ -560,6 +601,8 @@ class HireableWorker(models.Model):
             'salary_per_day':float(self.salary_per_day),
             'hire_cost':float(self.hire_cost),
             'expires_on_day':self.expires_on_day,
+            'positive_trait': self.positive_trait,
+            'negative_trait': self.negative_trait,
         }
 
 

@@ -606,3 +606,39 @@ Phase 0 (backup)
   use `secsFrom()` helper already in game.js
 - Phase 8 BrewStation: keep scope minimal — same pattern as Oven, just faster and no size selection
 - SQLite is fine for single-player. Multiplayer (PostgreSQL) is Phase D — NOT in this plan.
+
+
+
+Critical Backend Issues (Must Fix for Production)
+1. The Global Variable Trap (_last_tick_time)
+In game_engine.py, you are using a Python global variable _last_tick_time to track worker execution.
+
+The Reality: In a production environment (like Heroku, AWS, or DigitalOcean), Django runs on a WSGI server (like Gunicorn) using multiple parallel workers (processes). Each worker has its own isolated memory.
+
+The Bug: Worker A handles a tick and updates _last_tick_time. But the next request might go to Worker B, where _last_tick_time is still None. This will cause your workers to gain XP and bake cakes at wildly erratic speeds.
+
+The Fix: You must store the last_tick_time in your GameState database model so it is persistent and shared across all server processes.
+
+2. The Self-Inflicted DDoS (Polling Rate)
+In game.js, you have this loop: pollTimer = setInterval(poll, 500);
+
+The Reality: Every 500ms, the frontend hits /api/tick/. When that finishes, it immediately hits /api/state/. That is 4 HTTP requests per second, per active player. If you get just 100 players, your Django server will be slammed with 400 requests per second. Your database will likely crash.
+
+The Fix: * Short term: Increase the polling interval to 2000ms (2 seconds) or 3000ms. Handle the smooth visual countdowns entirely in JavaScript (which you are already doing nicely in startAnimationLoop()).
+
+Long term: Look into Django Channels (WebSockets). Instead of the client asking the server "Did anything happen?" 4 times a second, a WebSocket keeps a connection open and the server pushes an update only when a cake finishes baking or a customer arrives.
+
+🛠️ Frontend & Code Quality Improvements
+1. Heavy DOM Manipulation (innerHTML)
+In game.js, your render() functions (like renderOvens and renderStaff) make heavy use of string interpolation assigned to .innerHTML.
+
+While totally fine for a v1, replacing massive chunks of HTML on every poll destroys existing DOM nodes and recreates them. This can cause memory leaks, interrupt CSS animations, and create UI jitter.
+
+You've done a good job mitigating this by checking existing.has(ov.id), but moving forward, consider a lightweight reactive framework like Vue.js or Alpine.js. They handle DOM diffing automatically, ensuring only the exact text node that changed (like a timer) gets updated.
+
+2. Thread-Local Context (_inject_user)
+You used threading.local() to pass the request.user into the engine without passing it as an argument to every function.
+
+This is a clever hack, but it can be dangerous. If a view crashes halfway through, the thread might be returned to the pool with the old user still attached to _local.user. The next request on that thread could accidentally manipulate the previous user's game state.
+
+The Fix: Since Django handles routing, it's safer to explicitly pass user (or the GameState instance) to your engine functions. E.g., engine.tick(state=request.user.game_state). It's slightly more typing, but 100% bug-proof.

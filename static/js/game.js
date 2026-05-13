@@ -322,7 +322,6 @@ function renderBaking() {
     if(!el.querySelector('[data-bake-id]')) el.innerHTML=`<div class="empty-state"><div class="empty-icon">⏳</div>Nothing baking.</div>`;
     return;
   }
-  const incoming=new Set(G.baking.map(c=>c.id));
   el.querySelectorAll('[data-bake-id]').forEach(card=>{ if(!incoming.has(parseInt(card.dataset.bakeId)))card.remove(); });
   G.baking.forEach(c=>{
     if($(`bake-item-${c.id}`)) return;
@@ -344,7 +343,6 @@ function renderInventory() {
     if(!el.querySelector('[data-inv-id]')) el.innerHTML=`<div class="empty-state"><div class="empty-icon">🎂</div>Shelf empty — bake something!</div>`;
     return;
   }
-  const incoming=new Set(G.inventory.map(c=>c.id));
   el.querySelectorAll('[data-inv-id]').forEach(card=>{ if(!incoming.has(parseInt(card.dataset.invId)))card.remove(); });
   G.inventory.forEach(c=>{
     const dots=Array.from({length:c.total_slices},(_,i)=>`<div class="slice-dot ${i<c.remaining_slices?'used':''}"></div>`).join('');

@@ -25,6 +25,8 @@ from .models import (
     COURSE_CONFIG, HIRE_POOL_NAMES,
     CUSTOMER_TYPE_META, DAILY_EVENTS, KITCHEN_UPGRADES,
     WORKER_LEVEL_XP, WORKER_STAR_AT_LEVEL,
+    POSITIVE_TRAITS, NEGATIVE_TRAITS,
+    ROLE_SKILLS, SKILL_MASTERY_NAMES,
 )
 
 ALL_SIZES    = ['Small', 'Medium', 'Large']
@@ -1035,6 +1037,8 @@ def _generate_hire_pool():
         )[0]
 
         skill_id, skill_rarity = _pick_skill_for_role(role, star)
+        pos_trait = random.choice(list(POSITIVE_TRAITS.keys()))
+        neg_trait = random.choice(list(NEGATIVE_TRAITS.keys()))
 
         bake_speed    = random.randint(star, min(star + 1, 5))
         service_speed = random.randint(star, min(star + 1, 5))
@@ -1053,6 +1057,8 @@ def _generate_hire_pool():
             skill_id=skill_id, skill_rarity=skill_rarity,
             salary_per_day=D(salary), hire_cost=D(hire_c),
             available_from_day=day, expires_on_day=expires_day,
+            positive_trait=pos_trait,
+            negative_trait=neg_trait,
             is_hired=False,
         )
 
@@ -1093,6 +1099,9 @@ def hire_from_pool(hw_id):
             bake_speed=hw.bake_speed, service_speed=hw.service_speed,
             skill_id=hw.skill_id, skill_rarity=hw.skill_rarity,
             salary_per_day=hw.salary_per_day, hired_on_day=s.day,
+            positive_trait=hw.positive_trait,
+            negative_trait=hw.negative_trait,
+            skill_mastery={ROLE_SKILLS.get(hw.role, [''])[0]: 1} if ROLE_SKILLS.get(hw.role) else {},
         )
         hw.is_hired = True
         hw.save(update_fields=['is_hired'])
@@ -1227,6 +1236,7 @@ def end_day():
         workers  = list(Worker.objects.filter(game_state=s, is_active=True))
         salaries = round(sum(float(w.salary_per_day) for w in workers), 2)
         s.money -= D(salaries)
+        
 
         ingredient_costs = float(
             BakedCake.objects.filter(game_state=s, day_baked=day)
@@ -1251,7 +1261,17 @@ def end_day():
 
         net_profit      = round(revenue + tips - salaries - waste_cost, 2)
         closing_balance = round(opening_balance + net_profit, 2)
-        s.money         = D(closing_balance)
+        for w in workers:
+            delta = 0
+            if net_profit > 0: delta += 2
+            if expired_count == 0: delta += 1
+            delta -= min(expired_count, 5)
+            w.morale = max(0, min(100, w.morale + delta))
+            w.save(update_fields=['morale'])
+            if w.morale < 20:
+                log_event('⚠️', f'{w.name} is very unhappy — morale critical!',
+                          log_type='warning', day=day)
+        s.money = D(closing_balance)
 
         worker_notes = []
         for w in workers:
