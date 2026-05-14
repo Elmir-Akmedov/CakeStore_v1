@@ -14,12 +14,16 @@ from collections import Counter
 
 from django.conf import settings
 from django.db import transaction
+from django.db.utils import OperationalError, ProgrammingError
 from django.db.models import Sum
 from django.utils import timezone
 
 from .models import (
     BakedCake, CakeRecipe, CustomerOrder, DayReport,
     GameState, Oven, Worker, HireableWorker, EventLog,
+    OvenTypeConfig, KitchenUpgradeConfig, DailyEventConfig,
+    WorkerSkillConfig, CustomerTypeConfig, CourseConfig,
+    SalaryRangeConfig, GameBalanceConfig,
     CUSTOMER_NAMES, SIZE_SLICES,
     SKILL_CATALOGUE, SKILL_RARITY_COLORS, SKILL_RARITY_LABELS,
     COURSE_CONFIG, HIRE_POOL_NAMES,
@@ -52,6 +56,153 @@ RARITY_COST_PREMIUM = {
     'legendary': 2.50,
     'unique':    4.00,
 }
+
+
+def _db_config_available(model):
+    try:
+        return model.objects.exists()
+    except (OperationalError, ProgrammingError):
+        return False
+
+
+def get_balance_value(code, default=None, cast=None):
+    try:
+        row = GameBalanceConfig.objects.filter(code=code, is_enabled=True).first()
+    except (OperationalError, ProgrammingError):
+        row = None
+    if not row:
+        return default
+    raw = row.value
+    try:
+        if cast:
+            return cast(raw)
+        if row.value_type == 'int':
+            return int(raw)
+        if row.value_type == 'float':
+            return float(raw)
+        if row.value_type == 'decimal':
+            return D(raw)
+        if row.value_type == 'json':
+            return row.data
+    except (TypeError, ValueError, ArithmeticError):
+        return default
+    return raw
+
+
+def get_oven_catalog():
+    if not _db_config_available(OvenTypeConfig):
+        return OVEN_CATALOG
+    rows = OvenTypeConfig.objects.filter(is_enabled=True).order_by('sort_order', 'code')
+    catalog = {
+        row.tier: {
+            'name': row.name,
+            'cost': float(row.cost),
+            'speed_bonus': row.speed_bonus,
+            'tier': row.tier,
+        }
+        for row in rows
+    }
+    return catalog
+
+
+def get_kitchen_upgrades():
+    if not _db_config_available(KitchenUpgradeConfig):
+        return KITCHEN_UPGRADES
+    rows = KitchenUpgradeConfig.objects.filter(is_enabled=True).order_by('sort_order', 'code')
+    upgrades = {
+        row.code: {
+            'name': row.name,
+            'emoji': row.emoji,
+            'cost': float(row.cost),
+            'desc': row.description,
+        }
+        for row in rows
+    }
+    return upgrades
+
+
+def get_daily_events():
+    if not _db_config_available(DailyEventConfig):
+        return DAILY_EVENTS
+    rows = DailyEventConfig.objects.filter(is_enabled=True, weight__gt=0).order_by('sort_order', 'code')
+    events = [
+        {
+            'id': row.code,
+            'icon': row.icon,
+            'title': row.title,
+            'msg': row.message,
+            'type': row.event_type,
+            'weight': row.weight,
+            **(row.effect_data or {}),
+        }
+        for row in rows
+    ]
+    return events
+
+
+def get_customer_type_meta():
+    if not _db_config_available(CustomerTypeConfig):
+        return CUSTOMER_TYPE_META
+    rows = CustomerTypeConfig.objects.filter(is_enabled=True).order_by('sort_order', 'code')
+    meta = {
+        row.code: {
+            'patience_mult': row.patience_mult,
+            'tip_range': (row.tip_min, row.tip_max),
+            'revenue_mult': row.revenue_mult,
+            'icon': row.icon,
+            'weight': row.weight,
+            'rep_on_fail': row.rep_on_fail,
+        }
+        for row in rows
+    }
+    return meta
+
+
+def get_course_config():
+    if not _db_config_available(CourseConfig):
+        return COURSE_CONFIG
+    rows = CourseConfig.objects.filter(is_enabled=True).order_by('sort_order', 'code')
+    courses = {
+        (row.from_rarity, row.to_rarity): {
+            'cost': float(row.cost),
+            'days': row.days,
+        }
+        for row in rows
+    }
+    return courses
+
+
+def get_worker_skill_catalogue():
+    if not _db_config_available(WorkerSkillConfig):
+        return SKILL_CATALOGUE
+    rows = WorkerSkillConfig.objects.filter(is_enabled=True).order_by('sort_order', 'code')
+    catalogue = {
+        row.code: {
+            'name': row.name,
+            'role': row.role,
+            'rarity': row.rarity,
+            'desc': row.description,
+            'effect': row.effect,
+            'value': row.value,
+            'negative': row.is_negative,
+        }
+        for row in rows
+    }
+    return catalogue
+
+
+def get_salary_ranges():
+    if not _db_config_available(SalaryRangeConfig):
+        return SALARY_RANGES
+    ranges = {}
+    for row in SalaryRangeConfig.objects.filter(is_enabled=True).order_by('sort_order', 'code'):
+        ranges.setdefault(row.role, {})[row.skill_level] = (
+            float(row.hire_cost_min),
+            float(row.hire_cost_max),
+            float(row.salary_min),
+            float(row.salary_max),
+        )
+    return ranges if ranges.get('baker') else SALARY_RANGES
 
 # ── Thread-local user context ──────────────────────────────────────────────────
 _local = threading.local()
@@ -96,14 +247,18 @@ def validate_size(size):
         raise ValueError(f"Invalid size '{size}'.")
 
 def validate_recipe(recipe_id):
+    state = _state()
     try:
         recipe_id = int(recipe_id)
     except (TypeError, ValueError):
         raise ValueError("recipe_id must be an integer.")
     try:
-        return CakeRecipe.objects.get(pk=recipe_id, is_unlocked=True)
+        recipe = CakeRecipe.objects.get(pk=recipe_id)
     except CakeRecipe.DoesNotExist:
         raise ValueError(f"Recipe {recipe_id} not found or locked.")
+    if not state.is_recipe_unlocked(recipe):
+        raise ValueError(f"Recipe {recipe_id} not found or locked.")
+    return recipe
 
 def validate_oven(oven_id):
     state = _state()
@@ -128,11 +283,11 @@ def validate_worker(worker_id):
         raise ValueError(f"Worker {worker_id} not found.")
 
 def validate_oven_tier(tier):
-    if tier not in OVEN_CATALOG:
+    if tier not in get_oven_catalog():
         raise ValueError(f"Unknown oven tier '{tier}'.")
 
 def validate_upgrade(uid):
-    if uid not in KITCHEN_UPGRADES:
+    if uid not in get_kitchen_upgrades():
         raise ValueError(f"Unknown upgrade '{uid}'.")
 
 def validate_hireable_worker(hw_id):
@@ -157,7 +312,8 @@ def validate_work_mode(mode):
 
 def check_recipe_unlocks():
     state   = _state()
-    locked  = CakeRecipe.objects.filter(is_unlocked=False, is_starter=False)
+    state.ensure_starter_recipes()
+    locked  = CakeRecipe.objects.exclude(pk__in=state.unlocked_recipe_ids()).filter(is_starter=False)
     unlocked = []
     for recipe in locked:
         if recipe.shop_price is not None:
@@ -165,12 +321,16 @@ def check_recipe_unlocks():
         day_ok = recipe.unlock_day is None or state.day >= recipe.unlock_day
         rep_ok = recipe.unlock_rep is None or state.reputation >= recipe.unlock_rep
         if day_ok and rep_ok:
-            recipe.is_unlocked = True
-            recipe.save(update_fields=['is_unlocked'])
+            state.unlocked_recipes.add(recipe)
             unlocked.append(recipe.name)
             log_event('🔓', f'New recipe available: {recipe.name}!',
                       log_type='success', day=state.day)
     return unlocked
+
+
+def unlocked_recipes_for(state):
+    state.ensure_starter_recipes()
+    return CakeRecipe.objects.filter(pk__in=state.unlocked_recipe_ids())
 
 
 def buy_recipe(recipe_id):
@@ -184,10 +344,10 @@ def buy_recipe(recipe_id):
     except CakeRecipe.DoesNotExist:
         raise ValueError("Recipe not found.")
 
-    if recipe.is_unlocked:
+    state = _state()
+    if state.is_recipe_unlocked(recipe):
         raise ValueError(f"{recipe.name} is already unlocked.")
 
-    state = _state()
     if not recipe.can_be_purchased(state):
         raise ValueError(f"{recipe.name} is not available for purchase yet.")
 
@@ -199,8 +359,7 @@ def buy_recipe(recipe_id):
         s = GameState.objects.select_for_update().get(pk=state.pk)
         s.money -= D(recipe.shop_price)
         s.save(update_fields=['money'])
-        recipe.is_unlocked = True
-        recipe.save(update_fields=['is_unlocked'])
+        s.unlocked_recipes.add(recipe)
 
     log_event(recipe.emoji, f'Unlocked recipe: {recipe.name}!',
               log_type='success', day=state.day)
@@ -212,11 +371,15 @@ def buy_recipe(recipe_id):
 # ══════════════════════════════════════════════════════════════════
 
 def roll_daily_event(state):
-    if random.random() > 0.35:
+    event_chance = get_balance_value('event_roll_chance', 0.35, float)
+    if random.random() > event_chance:
         return None
 
-    weights = [e['weight'] for e in DAILY_EVENTS]
-    event   = random.choices(DAILY_EVENTS, weights=weights, k=1)[0]
+    daily_events = get_daily_events()
+    if not daily_events:
+        return None
+    weights = [e['weight'] for e in daily_events]
+    event   = random.choices(daily_events, weights=weights, k=1)[0]
     event   = dict(event)
 
     if event['id'] == 'oven_fault':
@@ -310,7 +473,8 @@ def start_course(worker_id):
 
     idx         = rarity_order.index(current_rarity)
     target      = rarity_order[idx + 1]
-    cfg         = COURSE_CONFIG.get((current_rarity, target))
+    course_config = get_course_config()
+    cfg         = course_config.get((current_rarity, target))
     if not cfg:
         raise ValueError("No course available for this upgrade path.")
 
@@ -354,7 +518,7 @@ def check_courses():
         worker.course_finish_day     = None
         worker.save(update_fields=['skill_rarity', 'course_target_rarity', 'course_finish_day'])
 
-        sc  = SKILL_CATALOGUE.get(worker.skill_id or '', {})
+        sc  = get_worker_skill_catalogue().get(worker.skill_id or '', {})
         log_event('🎓',
                   f"{worker.name} completed their course — skill upgraded to {new_rarity}!",
                   log_type='success', day=state.day)
@@ -485,7 +649,7 @@ def _worker_tick():
                 _auto_bake(worker, state, force_recipe=worker.target_recipe)
 
         elif worker.role == 'waiter':
-            sc = SKILL_CATALOGUE.get(worker.skill_id or '', {})
+            sc = get_worker_skill_catalogue().get(worker.skill_id or '', {})
             if sc.get('effect') == 'auto_bump':
                 _waiter_bump_urgent()
 
@@ -517,7 +681,7 @@ def _worker_fulfill_order(worker, state):
               .select_related('recipe')
               .order_by('expires_at'))
 
-    sc = SKILL_CATALOGUE.get(worker.skill_id or '', {})
+    sc = get_worker_skill_catalogue().get(worker.skill_id or '', {})
     if sc.get('effect') == 'vip_priority':
         vip_orders = orders.filter(customer_type__in=['vip', 'todays'])
         urgent_orders = orders.filter(order_type='urgent')
@@ -581,7 +745,7 @@ def _auto_bake(worker, state, force_recipe=None):
         if needed:
             recipe, size = needed
         else:
-            recipes = list(CakeRecipe.objects.filter(is_unlocked=True))
+            recipes = list(unlocked_recipes_for(state))
             if not recipes:
                 return
             recipe = random.choice(recipes)
@@ -630,7 +794,7 @@ def _maybe_generate_order():
         s.next_order_at = timezone.now() + timedelta(seconds=interval)
         s.save(update_fields=['next_order_at'])
 
-    recipes = list(CakeRecipe.objects.filter(is_unlocked=True))
+    recipes = list(unlocked_recipes_for(state))
     if not recipes:
         return None
 
@@ -641,18 +805,24 @@ def _maybe_generate_order():
         and random.random() < 0.3
     )
 
-    if spawn_todays:
-        ctype = 'todays'
-        cmeta = CUSTOMER_TYPE_META['todays']
-    else:
-        types   = [t for t in CUSTOMER_TYPE_META if t != 'todays']
-        weights = [CUSTOMER_TYPE_META[t]['weight'] for t in types]
-        ctype   = random.choices(types, weights=weights, k=1)[0]
-        cmeta   = CUSTOMER_TYPE_META[ctype]
+    customer_meta = get_customer_type_meta()
+    if not customer_meta:
+        return None
 
-    if active_event.get('id') == 'vip_party' and state.event_counter < 3:
+    if spawn_todays and 'todays' in customer_meta:
+        ctype = 'todays'
+        cmeta = customer_meta['todays']
+    else:
+        types   = [t for t in customer_meta if t != 'todays']
+        if not types:
+            return None
+        weights = [customer_meta[t]['weight'] for t in types]
+        ctype   = random.choices(types, weights=weights, k=1)[0]
+        cmeta   = customer_meta[ctype]
+
+    if active_event.get('id') == 'vip_party' and state.event_counter < 3 and 'vip' in customer_meta:
         ctype = 'vip'
-        cmeta = CUSTOMER_TYPE_META['vip']
+        cmeta = customer_meta['vip']
         with transaction.atomic():
             s = GameState.objects.select_for_update().get(pk=state.pk)
             s.event_counter += 1
@@ -733,7 +903,7 @@ def _expire_orders():
             rep_mult = 1.0
             waiters  = Worker.objects.filter(game_state=state, role='waiter', is_active=True)
             for w in waiters:
-                sc = SKILL_CATALOGUE.get(w.skill_id or '', {})
+                sc = get_worker_skill_catalogue().get(w.skill_id or '', {})
                 if sc.get('effect') == 'rep_loss_mult':
                     rep_mult *= sc['value']
 
@@ -900,7 +1070,7 @@ def fulfill_order(order_id):
             revenue *= 2
             s.event_counter += 1
 
-        ctype     = CUSTOMER_TYPE_META.get(order.customer_type, {})
+        ctype     = get_customer_type_meta().get(order.customer_type, {})
         tip_range = ctype.get('tip_range', (0.05, 0.12))
         tip       = 0.0
 
@@ -909,7 +1079,7 @@ def fulfill_order(order_id):
         tip_mult    = 1.0
         tip_always  = False
         for c in cashiers:
-            sc = SKILL_CATALOGUE.get(c.skill_id or '', {})
+            sc = get_worker_skill_catalogue().get(c.skill_id or '', {})
             eff = sc.get('effect', '')
             if eff == 'tip_chance_bonus': tip_chance += sc['value']
             if eff == 'tip_mult':         tip_mult   *= sc['value']
@@ -923,7 +1093,7 @@ def fulfill_order(order_id):
 
         maestro_rep = sum(
             0.5 for w in Worker.objects.filter(game_state=state, role='waiter', is_active=True)
-            if SKILL_CATALOGUE.get(w.skill_id or '', {}).get('effect') == 'rep_per_order'
+            if get_worker_skill_catalogue().get(w.skill_id or '', {}).get('effect') == 'rep_per_order'
         )
 
         total_earned = revenue + tip
@@ -989,7 +1159,7 @@ def _star_weights_for_day(day):
 
 def _pick_skill_for_role(role, star):
     candidates = [
-        (sid, sc) for sid, sc in SKILL_CATALOGUE.items()
+        (sid, sc) for sid, sc in get_worker_skill_catalogue().items()
         if sc['role'] == role
     ]
     if not candidates:
@@ -1053,7 +1223,8 @@ def _generate_hire_pool():
         bake_speed    = random.randint(star, min(star + 1, 5))
         service_speed = random.randint(star, min(star + 1, 5))
 
-        ranges  = SALARY_RANGES.get(role, SALARY_RANGES['baker'])[star]
+        salary_ranges = get_salary_ranges()
+        ranges  = salary_ranges.get(role, salary_ranges['baker'])[star]
         salary  = random.randint(ranges[2], ranges[3])
         hire_c  = random.randint(ranges[0], ranges[1])
 
@@ -1141,7 +1312,7 @@ def fire_worker(worker_id):
 
 def buy_oven(tier):
     validate_oven_tier(tier)
-    cfg   = OVEN_CATALOG[tier]
+    cfg   = get_oven_catalog()[tier]
     state = _state()
     with transaction.atomic():
         s = GameState.objects.select_for_update().get(pk=state.pk)
@@ -1161,7 +1332,7 @@ def buy_oven(tier):
 
 def buy_upgrade(uid):
     validate_upgrade(uid)
-    cfg   = KITCHEN_UPGRADES[uid]
+    cfg   = get_kitchen_upgrades()[uid]
     state = _state()
     with transaction.atomic():
         s = GameState.objects.select_for_update().get(pk=state.pk)
@@ -1286,7 +1457,7 @@ def end_day():
         worker_notes = []
         for w in workers:
             if w.level > 1:
-                sk = SKILL_CATALOGUE.get(w.skill_id or '', {})
+                sk = get_worker_skill_catalogue().get(w.skill_id or '', {})
                 note = f"{'👨‍🍳' if w.role=='baker' else '💳' if w.role=='cashier' else '🍽️' if w.role=='waiter' else '📋'} {w.name} — Lv.{w.level} ★{w.skill_level}"
                 if sk:
                     note += f" [{sk['name']}]"
@@ -1331,7 +1502,7 @@ def end_day():
     return {
         'ok':        True,
         'report':    report.to_dict(),
-        'game_over': closing_balance < -50,
+        'game_over': closing_balance < float(get_balance_value('game_over_debt_limit', -50, float)),
     }
 
 
@@ -1341,7 +1512,11 @@ def end_day():
 
 def open_store():
     state = _state()
-    day_duration = getattr(settings, 'DEFAULT_DAY_DURATION_SECONDS', 300)
+    day_duration = get_balance_value(
+        'default_day_duration_seconds',
+        getattr(settings, 'DEFAULT_DAY_DURATION_SECONDS', 300),
+        int,
+    )
 
     with transaction.atomic():
         s = GameState.objects.select_for_update().get(pk=state.pk)
@@ -1403,8 +1578,8 @@ def start_game(store_name, confirmed=False):
         s = GameState.objects.select_for_update().get(pk=state.pk)
         s.store_name             = (store_name or 'Sweet Layers').strip()[:100]
         s.day                    = 1
-        s.money                  = D(500)
-        s.reputation             = 50
+        s.money                  = D(get_balance_value('starting_money', 500, float))
+        s.reputation             = get_balance_value('starting_reputation', 50, int)
         s.is_open                = False
         s.game_started           = True
         s.day_started_at         = None
@@ -1422,6 +1597,7 @@ def start_game(store_name, confirmed=False):
         s.todays_guest_id        = None
         s.course_discount_active = False
         s.save()
+        s.reset_unlocked_recipes()
 
     refresh_hire_pool()
     global _last_tick_time
@@ -1435,6 +1611,7 @@ def start_game(store_name, confirmed=False):
 
 def get_full_state():
     state       = _state()
+    state.ensure_starter_recipes()
     current_day = state.day
 
     ovens     = [o.to_dict() for o in
@@ -1462,11 +1639,11 @@ def get_full_state():
     upgrades = [
         {'id':uid,'name':ucfg['name'],'emoji':ucfg['emoji'],
          'cost':ucfg['cost'],'desc':ucfg['desc'],'owned':state.has_upgrade(uid)}
-        for uid, ucfg in KITCHEN_UPGRADES.items()
+        for uid, ucfg in get_kitchen_upgrades().items()
     ]
 
     course_costs = {}
-    for (fr, to), cfg in COURSE_CONFIG.items():
+    for (fr, to), cfg in get_course_config().items():
         cost = round(cfg['cost'] * (0.70 if state.course_discount_active else 1.0))
         course_costs[f"{fr}_to_{to}"] = {'cost': cost, 'days': cfg['days']}
 
@@ -1484,6 +1661,6 @@ def get_full_state():
         'upgrades':     upgrades,
         'course_costs': course_costs,
         'shop': {
-            'ovens': [{'tier':k,**v} for k,v in OVEN_CATALOG.items()],
+            'ovens': [{'tier':k,**v} for k,v in get_oven_catalog().items()],
         },
     }

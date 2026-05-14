@@ -2,10 +2,15 @@
 models.py — Phase 2 + auth + day-timer
 New: user-scoped GameState, day_end_at for timed days
 """
+import json
+from datetime import timedelta
+
+from django.core.exceptions import ValidationError
+from django.core.serializers.json import DjangoJSONEncoder
 from django.db import models
+from django.db.utils import OperationalError, ProgrammingError
 from django.contrib.auth.models import User
 from django.utils import timezone
-from datetime import timedelta
 
 CUSTOMER_NAMES = [
     "Alice","Bob","Carol","Dave","Eve","Frank","Grace","Hank",
@@ -221,6 +226,8 @@ class GameState(models.Model):
     event_counter       = models.IntegerField(default=0)
     briefing_data       = models.JSONField(null=True, blank=True)
     owned_upgrades      = models.JSONField(default=list)
+    unlocked_recipes    = models.ManyToManyField(
+        'CakeRecipe', blank=True, related_name='unlocked_by_states')
     rush_ends_at        = models.DateTimeField(null=True, blank=True)
     critic_fresh_served = models.IntegerField(default=0)
     todays_guest_id     = models.IntegerField(null=True, blank=True)
@@ -237,14 +244,38 @@ class GameState(models.Model):
     def get(cls, user=None):
         """Get or create GameState for a user (or the legacy pk=1 state)."""
         if user and user.is_authenticated:
-            obj, _ = cls.objects.get_or_create(user=user, defaults={'store_name': 'Sweet Layers'})
+            obj, created = cls.objects.get_or_create(user=user, defaults={'store_name': 'Sweet Layers'})
+            if created:
+                obj.ensure_starter_recipes()
             return obj
         # Fallback: legacy single-state (used by engine before user context set)
-        obj, _ = cls.objects.get_or_create(pk=1)
+        obj, created = cls.objects.get_or_create(pk=1)
+        if created:
+            obj.ensure_starter_recipes()
         return obj
 
     def has_upgrade(self, uid):
         return uid in (self.owned_upgrades or [])
+
+    def unlocked_recipe_ids(self):
+        if not self.pk:
+            return set()
+        return set(self.unlocked_recipes.values_list('id', flat=True))
+
+    def is_recipe_unlocked(self, recipe):
+        if recipe.is_starter:
+            return True
+        if not self.pk:
+            return bool(recipe.is_unlocked)
+        return self.unlocked_recipes.filter(pk=recipe.pk).exists()
+
+    def ensure_starter_recipes(self):
+        if self.pk:
+            self.unlocked_recipes.add(*CakeRecipe.objects.filter(is_starter=True))
+
+    def reset_unlocked_recipes(self):
+        if self.pk:
+            self.unlocked_recipes.set(CakeRecipe.objects.filter(is_starter=True))
 
     @property
     def day_seconds_remaining(self):
@@ -273,9 +304,10 @@ class GameState(models.Model):
         managers = Worker.objects.filter(game_state=self, role='manager', is_active=True)
         for m in managers:
             skill = m.skill_id
-            if not skill or skill not in SKILL_CATALOGUE:
+            skill_catalogue = get_worker_skill_catalogue()
+            if not skill or skill not in skill_catalogue:
                 continue
-            sc = SKILL_CATALOGUE[skill]
+            sc = skill_catalogue[skill]
             eff = sc['effect']
             val = sc['value']
             if eff == 'global_speed':       buffs['global_speed']      *= val
@@ -292,8 +324,9 @@ class GameState(models.Model):
         if self.rush_ends_at and timezone.now() < self.rush_ends_at: base *= 3.0
         waiters = Worker.objects.filter(game_state=self, role='waiter', is_active=True)
         for w in waiters:
-            if w.skill_id and SKILL_CATALOGUE.get(w.skill_id, {}).get('effect') == 'order_freq_mult':
-                base *= SKILL_CATALOGUE[w.skill_id]['value']
+            skill_catalogue = get_worker_skill_catalogue()
+            if w.skill_id and skill_catalogue.get(w.skill_id, {}).get('effect') == 'order_freq_mult':
+                base *= skill_catalogue[w.skill_id]['value']
         return base
 
     @property
@@ -326,7 +359,7 @@ class GameState(models.Model):
         if self.has_upgrade('music_system'): mult *= 1.08
         waiters = Worker.objects.filter(game_state=self, role='waiter', is_active=True)
         for w in waiters:
-            sc = SKILL_CATALOGUE.get(w.skill_id or '', {})
+            sc = get_worker_skill_catalogue().get(w.skill_id or '', {})
             if sc.get('effect') == 'patience_mult': mult *= sc['value']
         return mult
 
@@ -392,17 +425,21 @@ class CakeRecipe(models.Model):
         return {'Small':self.bake_sec_small,'Medium':self.bake_sec_medium,'Large':self.bake_sec_large}[size]
 
     def can_be_purchased(self, state):
-        if self.is_unlocked or self.is_starter: return False
+        if self.is_starter: return False
+        if state and state.is_recipe_unlocked(self): return False
+        if not state and self.is_unlocked: return False
+        if not state: return False
         day_ok = self.unlock_day is None or state.day >= self.unlock_day
         rep_ok = self.unlock_rep is None or state.reputation >= self.unlock_rep
         return day_ok and rep_ok and self.shop_price is not None
 
     def to_dict(self, state=None):
         purchasable = self.can_be_purchased(state) if state else False
+        unlocked = state.is_recipe_unlocked(self) if state else self.is_unlocked
         return {
             'id':self.pk,'name':self.name,'type':self.cake_type,
             'emoji':self.emoji,'ingredients':self.ingredients,
-            'is_unlocked':self.is_unlocked,'is_starter':self.is_starter,
+            'is_unlocked':unlocked,'is_starter':self.is_starter,
             'shop_price':float(self.shop_price) if self.shop_price else None,
             'unlock_day':self.unlock_day,'unlock_rep':self.unlock_rep,
             'unlock_message':self.unlock_message,
@@ -498,10 +535,16 @@ class Worker(models.Model):
 
     def __str__(self): return f"{self.name} ({self.role})"
 
+    def clean(self):
+        if self.assigned_oven and self.game_state_id != self.assigned_oven.game_state_id:
+            raise ValidationError({'assigned_oven': 'Assigned oven must belong to the same player/store.'})
+        if self.target_recipe and self.game_state and not self.game_state.is_recipe_unlocked(self.target_recipe):
+            raise ValidationError({'target_recipe': 'Target recipe must be unlocked for this player/store.'})
+
     @property
     def bake_time_factor(self):
         base = max(0.5, 1.0 - (self.bake_speed - 1) * 0.1)
-        sc = SKILL_CATALOGUE.get(self.skill_id or '', {})
+        sc = get_worker_skill_catalogue().get(self.skill_id or '', {})
         if sc.get('effect') == 'bake_time_mult': base *= sc['value']
         if sc.get('effect') == 'golden_hands':   base *= 0.75
         return max(0.35, base)
@@ -521,7 +564,7 @@ class Worker(models.Model):
 
     def get_skill_info(self):
         if not self.skill_id: return None
-        sc = SKILL_CATALOGUE.get(self.skill_id, {})
+        sc = get_worker_skill_catalogue().get(self.skill_id, {})
         if not sc: return None
         return {
             'id':       self.skill_id,
@@ -583,8 +626,9 @@ class HireableWorker(models.Model):
 
     def to_dict(self):
         skill_info = None
-        if self.skill_id and self.skill_id in SKILL_CATALOGUE:
-            sc = SKILL_CATALOGUE[self.skill_id]
+        skill_catalogue = get_worker_skill_catalogue()
+        if self.skill_id and self.skill_id in skill_catalogue:
+            sc = skill_catalogue[self.skill_id]
             skill_info = {
                 'id':self.skill_id,'name':sc['name'],
                 'rarity':self.skill_rarity,
@@ -625,6 +669,10 @@ class BakedCake(models.Model):
 
 
     def __str__(self): return f"{self.recipe.name} ({self.size})"
+
+    def clean(self):
+        if self.oven and self.game_state_id != self.oven.game_state_id:
+            raise ValidationError({'oven': 'Cake oven must belong to the same player/store.'})
 
     @property
     def total_slices(self): return SIZE_SLICES[self.size]
@@ -690,6 +738,10 @@ class CustomerOrder(models.Model):
 
     def __str__(self): return f"{self.customer_name}: {self.recipe.name}"
 
+    def clean(self):
+        if self.game_state and not self.game_state.is_recipe_unlocked(self.recipe):
+            raise ValidationError({'recipe': 'Order recipe must be unlocked for this player/store.'})
+
     @property
     def urgency(self):
         if self.status != 'pending': return 'done'
@@ -707,13 +759,13 @@ class CustomerOrder(models.Model):
         slices = SIZE_SLICES[self.size]
         base   = price * self.quantity + (price / slices) * self.pieces
         mult   = 1.5 if self.order_type == 'urgent' else (1.2 if self.order_type == 'bulk' else 1.0)
-        ctype  = CUSTOMER_TYPE_META.get(self.customer_type, {})
+        ctype  = get_customer_type_catalogue().get(self.customer_type, {})
         mult  *= ctype.get('revenue_mult', 1.0)
         if self.customer_type == 'todays': mult *= 1.5
         return round(base * mult, 2)
 
     def to_dict(self, state=None):
-        ctype = CUSTOMER_TYPE_META.get(self.customer_type, {})
+        ctype = get_customer_type_catalogue().get(self.customer_type, {})
         return {
             'id':self.pk,'customer_name':self.customer_name,
             'customer_type':self.customer_type,'customer_icon':ctype.get('icon',''),
@@ -783,3 +835,302 @@ class DayReport(models.Model):
             'customer_satisfaction':self.customer_satisfaction,
             'best_seller':self.best_seller,'best_seller_count':self.best_seller_count,
         }
+
+
+class BaseConfigModel(models.Model):
+    code = models.CharField(max_length=80, unique=True)
+    name = models.CharField(max_length=120)
+    is_enabled = models.BooleanField(default=True)
+    sort_order = models.IntegerField(default=0)
+    notes = models.TextField(blank=True, default='')
+
+    class Meta:
+        abstract = True
+        ordering = ['sort_order', 'code']
+
+    def __str__(self):
+        return self.name
+
+
+class OvenTypeConfig(BaseConfigModel):
+    tier = models.CharField(max_length=20, unique=True)
+    cost = models.DecimalField(max_digits=8, decimal_places=2, default=0)
+    speed_bonus = models.FloatField(default=1.0)
+
+    class Meta(BaseConfigModel.Meta):
+        verbose_name = 'Base Game Studio - Oven Type'
+        verbose_name_plural = 'Base Game Studio - Oven Types'
+
+
+class KitchenUpgradeConfig(BaseConfigModel):
+    emoji = models.CharField(max_length=10, blank=True, default='')
+    cost = models.DecimalField(max_digits=8, decimal_places=2, default=0)
+    description = models.CharField(max_length=300, blank=True, default='')
+
+    class Meta(BaseConfigModel.Meta):
+        verbose_name = 'Base Game Studio - Kitchen Upgrade'
+        verbose_name_plural = 'Base Game Studio - Kitchen Upgrades'
+
+
+class DailyEventConfig(BaseConfigModel):
+    EVENT_TYPE_CHOICES = [
+        ('positive', 'Positive'),
+        ('negative', 'Negative'),
+        ('challenge', 'Challenge'),
+        ('info', 'Info'),
+    ]
+    icon = models.CharField(max_length=10, blank=True, default='')
+    title = models.CharField(max_length=120)
+    message = models.CharField(max_length=300)
+    event_type = models.CharField(max_length=20, choices=EVENT_TYPE_CHOICES, default='info')
+    weight = models.IntegerField(default=1)
+    effect_data = models.JSONField(default=dict, blank=True)
+
+    class Meta(BaseConfigModel.Meta):
+        verbose_name = 'Base Game Studio - Daily Event'
+        verbose_name_plural = 'Base Game Studio - Daily Events'
+
+
+class WorkerSkillConfig(BaseConfigModel):
+    role = models.CharField(max_length=20)
+    rarity = models.CharField(max_length=20, default='standard')
+    description = models.CharField(max_length=300, blank=True, default='')
+    effect = models.CharField(max_length=60, blank=True, default='')
+    value = models.FloatField(default=1.0)
+    is_negative = models.BooleanField(default=False)
+
+    class Meta(BaseConfigModel.Meta):
+        verbose_name = 'Base Game Studio - Worker Skill'
+        verbose_name_plural = 'Base Game Studio - Worker Skills'
+
+
+class WorkerTraitConfig(BaseConfigModel):
+    TRAIT_TYPE_CHOICES = [('positive', 'Positive'), ('negative', 'Negative')]
+    trait_type = models.CharField(max_length=20, choices=TRAIT_TYPE_CHOICES)
+    icon = models.CharField(max_length=10, blank=True, default='')
+    description = models.CharField(max_length=300, blank=True, default='')
+
+    class Meta(BaseConfigModel.Meta):
+        verbose_name = 'Base Game Studio - Worker Trait'
+        verbose_name_plural = 'Base Game Studio - Worker Traits'
+
+
+class CustomerTypeConfig(BaseConfigModel):
+    icon = models.CharField(max_length=10, blank=True, default='')
+    patience_mult = models.FloatField(default=1.0)
+    revenue_mult = models.FloatField(default=1.0)
+    tip_min = models.FloatField(default=0.0)
+    tip_max = models.FloatField(default=0.0)
+    weight = models.IntegerField(default=1)
+    rep_on_fail = models.IntegerField(default=0)
+
+    class Meta(BaseConfigModel.Meta):
+        verbose_name = 'Base Game Studio - Customer Type'
+        verbose_name_plural = 'Base Game Studio - Customer Types'
+
+
+class CourseConfig(BaseConfigModel):
+    from_rarity = models.CharField(max_length=20)
+    to_rarity = models.CharField(max_length=20)
+    cost = models.DecimalField(max_digits=8, decimal_places=2, default=0)
+    days = models.IntegerField(default=1)
+
+    class Meta(BaseConfigModel.Meta):
+        verbose_name = 'Base Game Studio - Course Rule'
+        verbose_name_plural = 'Base Game Studio - Course Rules'
+
+
+class SalaryRangeConfig(BaseConfigModel):
+    role = models.CharField(max_length=20)
+    skill_level = models.IntegerField(default=1)
+    salary_min = models.DecimalField(max_digits=8, decimal_places=2, default=0)
+    salary_max = models.DecimalField(max_digits=8, decimal_places=2, default=0)
+    hire_cost_min = models.DecimalField(max_digits=8, decimal_places=2, default=0)
+    hire_cost_max = models.DecimalField(max_digits=8, decimal_places=2, default=0)
+
+    class Meta(BaseConfigModel.Meta):
+        verbose_name = 'Base Game Studio - Salary Range'
+        verbose_name_plural = 'Base Game Studio - Salary Ranges'
+
+
+class GameBalanceConfig(BaseConfigModel):
+    value_type = models.CharField(
+        max_length=20,
+        choices=[('int', 'Integer'), ('float', 'Float'), ('decimal', 'Decimal'), ('text', 'Text'), ('json', 'JSON')],
+        default='float')
+    value = models.CharField(max_length=200, blank=True, default='')
+    data = models.JSONField(default=dict, blank=True)
+
+    class Meta(BaseConfigModel.Meta):
+        verbose_name = 'Base Game Studio - Game Balance Setting'
+        verbose_name_plural = 'Base Game Studio - Game Balance Settings'
+
+
+class ConfigImportJob(models.Model):
+    TARGET_CHOICES = [
+        ('oven_type', 'Oven Types'),
+        ('kitchen_upgrade', 'Kitchen Upgrades'),
+        ('daily_event', 'Daily Events'),
+        ('worker_skill', 'Worker Skills'),
+        ('worker_trait', 'Worker Traits'),
+        ('customer_type', 'Customer Types'),
+        ('course', 'Course Rules'),
+        ('salary_range', 'Salary Ranges'),
+        ('game_balance', 'Game Balance Settings'),
+    ]
+    target_model = models.CharField(max_length=40, choices=TARGET_CHOICES)
+    payload = models.JSONField(default=list)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    applied_at = models.DateTimeField(null=True, blank=True)
+    result = models.TextField(blank=True, default='')
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'Base Game Studio - Config Import Job'
+        verbose_name_plural = 'Base Game Studio - Config Import Jobs'
+
+    def __str__(self):
+        return f"{self.get_target_model_display()} import at {self.created_at:%Y-%m-%d %H:%M}"
+
+
+class AdminNote(models.Model):
+    game_state = models.ForeignKey(GameState, on_delete=models.CASCADE, related_name='admin_notes')
+    author = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    title = models.CharField(max_length=120)
+    body = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-updated_at']
+        verbose_name = 'Player Control Center - Admin Note'
+        verbose_name_plural = 'Player Control Center - Admin Notes'
+
+    def __str__(self):
+        return f"{self.game_state}: {self.title}"
+
+
+class AdminActionLog(models.Model):
+    admin_user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    game_state = models.ForeignKey(GameState, on_delete=models.SET_NULL, null=True, blank=True, related_name='admin_action_logs')
+    action_name = models.CharField(max_length=120)
+    before_summary = models.JSONField(default=dict, blank=True)
+    after_summary = models.JSONField(default=dict, blank=True)
+    reason = models.CharField(max_length=300, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'Player Control Center - Admin Action Log'
+        verbose_name_plural = 'Player Control Center - Admin Action Logs'
+
+    def __str__(self):
+        return f"{self.action_name} at {self.created_at:%Y-%m-%d %H:%M}"
+
+
+class PlayerSnapshot(models.Model):
+    game_state = models.ForeignKey(GameState, on_delete=models.CASCADE, related_name='player_snapshots')
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    label = models.CharField(max_length=120)
+    reason = models.CharField(max_length=300, blank=True, default='')
+    data = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'Player Control Center - Player Snapshot'
+        verbose_name_plural = 'Player Control Center - Player Snapshots'
+
+    def __str__(self):
+        return f"{self.game_state} - {self.label}"
+
+    @classmethod
+    def capture(cls, game_state, created_by=None, label='Manual snapshot', reason=''):
+        def json_safe(value):
+            return json.loads(json.dumps(value, cls=DjangoJSONEncoder))
+
+        data = {
+            'game_state': {
+                'store_name': game_state.store_name,
+                'day': game_state.day,
+                'money': str(game_state.money),
+                'reputation': game_state.reputation,
+                'is_open': game_state.is_open,
+                'game_started': game_state.game_started,
+                'owned_upgrades': game_state.owned_upgrades or [],
+                'active_event': game_state.active_event,
+                'unlocked_recipe_ids': list(game_state.unlocked_recipes.values_list('id', flat=True)),
+            },
+            'ovens': json_safe(list(game_state.ovens.values())),
+            'workers': json_safe(list(game_state.workers.values())),
+            'hireable_workers': json_safe(list(game_state.hireable_workers.values())),
+            'baked_cakes': json_safe(list(game_state.baked_cakes.values())),
+            'orders': json_safe(list(game_state.orders.values())),
+        }
+        return cls.objects.create(
+            game_state=game_state,
+            created_by=created_by,
+            label=label,
+            reason=reason,
+            data=data,
+        )
+
+    def restore_core_state(self):
+        state_data = (self.data or {}).get('game_state', {})
+        if not state_data:
+            return
+        for field in (
+            'store_name', 'day', 'money', 'reputation', 'is_open',
+            'game_started', 'owned_upgrades', 'active_event',
+        ):
+            if field in state_data:
+                setattr(self.game_state, field, state_data[field])
+        self.game_state.save()
+        recipe_ids = state_data.get('unlocked_recipe_ids')
+        if recipe_ids is not None:
+            self.game_state.unlocked_recipes.set(CakeRecipe.objects.filter(pk__in=recipe_ids))
+
+
+def _config_table_ready(model):
+    try:
+        return model.objects.exists()
+    except (OperationalError, ProgrammingError):
+        return False
+
+
+def get_worker_skill_catalogue():
+    if not _config_table_ready(WorkerSkillConfig):
+        return SKILL_CATALOGUE
+    rows = WorkerSkillConfig.objects.filter(is_enabled=True).order_by('sort_order', 'code')
+    catalogue = {
+        row.code: {
+            'name': row.name,
+            'role': row.role,
+            'rarity': row.rarity,
+            'desc': row.description,
+            'effect': row.effect,
+            'value': row.value,
+            'negative': row.is_negative,
+        }
+        for row in rows
+    }
+    return catalogue
+
+
+def get_customer_type_catalogue():
+    if not _config_table_ready(CustomerTypeConfig):
+        return CUSTOMER_TYPE_META
+    rows = CustomerTypeConfig.objects.filter(is_enabled=True).order_by('sort_order', 'code')
+    catalogue = {
+        row.code: {
+            'patience_mult': row.patience_mult,
+            'tip_range': (row.tip_min, row.tip_max),
+            'revenue_mult': row.revenue_mult,
+            'icon': row.icon,
+            'weight': row.weight,
+            'rep_on_fail': row.rep_on_fail,
+        }
+        for row in rows
+    }
+    return catalogue

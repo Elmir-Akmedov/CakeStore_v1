@@ -1,0 +1,105 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+<style>
+  .analytics-grid {
+    display: grid;
+    gap: 16px;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  }
+  .analytics-panel {
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 12px;
+    overflow-x: auto;
+  }
+  .analytics-panel table {
+    width: 100%;
+  }
+  .analytics-panel th,
+  .analytics-panel td {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border-color);
+  }
+</style>
+
+<h1>Game Analytics</h1>
+<p><a href="{% url 'admin:index' %}">Back to control room</a></p>
+
+<div class="analytics-grid">
+  <section class="analytics-panel">
+    <h2>Top Players By Money</h2>
+    <table>
+      <tr><th>Player</th><th>Store</th><th>Day</th><th>Money</th><th>Rep</th></tr>
+      {% for state in top_players %}
+      <tr>
+        <td>{{ state.user.username|default:"anon" }}</td>
+        <td><a href="{% url 'admin:game_gamestate_change' state.pk %}">{{ state.store_name }}</a></td>
+        <td>{{ state.day }}</td>
+        <td>${{ state.money }}</td>
+        <td>{{ state.reputation }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </section>
+
+  <section class="analytics-panel">
+    <h2>Players Needing Attention</h2>
+    <table>
+      <tr><th>Player</th><th>Store</th><th>Money</th><th>Orders Expired</th></tr>
+      {% for row in stuck_players %}
+      <tr>
+        <td>{{ row.state.user.username|default:"anon" }}</td>
+        <td><a href="{% url 'admin:game_gamestate_change' row.state.pk %}">{{ row.state.store_name }}</a></td>
+        <td>${{ row.state.money }}</td>
+        <td>{{ row.expired_count }}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="4">No obvious stuck players.</td></tr>
+      {% endfor %}
+    </table>
+  </section>
+
+  <section class="analytics-panel">
+    <h2>Recipe Popularity</h2>
+    <table>
+      <tr><th>Recipe</th><th>Orders</th><th>Revenue</th></tr>
+      {% for row in recipe_popularity %}
+      <tr><td>{{ row.recipe__name }}</td><td>{{ row.total }}</td><td>${{ row.revenue|default:"0" }}</td></tr>
+      {% empty %}
+      <tr><td colspan="3">No fulfilled orders yet.</td></tr>
+      {% endfor %}
+    </table>
+  </section>
+
+  <section class="analytics-panel">
+    <h2>Worker Role Distribution</h2>
+    <table>
+      <tr><th>Role</th><th>Total</th></tr>
+      {% for row in worker_roles %}
+      <tr><td>{{ row.role }}</td><td>{{ row.total }}</td></tr>
+      {% endfor %}
+    </table>
+  </section>
+
+  <section class="analytics-panel">
+    <h2>Event Frequency</h2>
+    <table>
+      <tr><th>Type</th><th>Total</th></tr>
+      {% for row in event_frequency %}
+      <tr><td>{{ row.log_type }}</td><td>{{ row.total }}</td></tr>
+      {% endfor %}
+    </table>
+  </section>
+
+  <section class="analytics-panel">
+    <h2>Economy Totals</h2>
+    <table>
+      <tr><th>Revenue</th><td>${{ economy.revenue|default:"0" }}</td></tr>
+      <tr><th>Salaries</th><td>${{ economy.salaries|default:"0" }}</td></tr>
+      <tr><th>Waste</th><td>${{ economy.waste|default:"0" }}</td></tr>
+      <tr><th>Net</th><td>${{ economy.net|default:"0" }}</td></tr>
+    </table>
+  </section>
+</div>
+{% endblock %}

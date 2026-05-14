@@ -1,0 +1,60 @@
+{% extends "admin/index.html" %}
+
+{% block content %}
+<style>
+  .control-room-grid {
+    display: grid;
+    gap: 16px;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    margin-bottom: 22px;
+  }
+  .control-room-panel {
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--body-bg);
+    padding: 14px 16px;
+  }
+  .control-room-panel h2 {
+    margin: 0 0 10px;
+    font-size: 1rem;
+  }
+  .control-room-panel a {
+    display: inline-block;
+    margin: 4px 10px 4px 0;
+  }
+</style>
+
+<div class="control-room-grid">
+  <section class="control-room-panel">
+    <h2>Base Game Studio</h2>
+    <a href="{% url 'admin:game_cakerecipe_changelist' %}">Recipes</a>
+    <a href="{% url 'admin:game_oventypeconfig_changelist' %}">Oven Types</a>
+    <a href="{% url 'admin:game_kitchenupgradeconfig_changelist' %}">Kitchen Upgrades</a>
+    <a href="{% url 'admin:game_dailyeventconfig_changelist' %}">Daily Events</a>
+    <a href="{% url 'admin:game_workerskillconfig_changelist' %}">Worker Skills</a>
+    <a href="{% url 'admin:game_workertraitconfig_changelist' %}">Worker Traits</a>
+    <a href="{% url 'admin:game_customertypeconfig_changelist' %}">Customer Types</a>
+    <a href="{% url 'admin:game_courseconfig_changelist' %}">Course Rules</a>
+    <a href="{% url 'admin:game_salaryrangeconfig_changelist' %}">Salary Ranges</a>
+    <a href="{% url 'admin:game_gamebalanceconfig_changelist' %}">Balance Settings</a>
+    <a href="{% url 'admin:game_configimportjob_changelist' %}">JSON Imports</a>
+  </section>
+
+  <section class="control-room-panel">
+    <h2>Player Control Center</h2>
+    <a href="{% url 'admin:game_gamestate_changelist' %}">Player Stores</a>
+    <a href="{% url 'admin:game_bakedcake_changelist' %}">Shelf / Inventory</a>
+    <a href="{% url 'admin:game_worker_changelist' %}">Workers</a>
+    <a href="{% url 'admin:game_hireableworker_changelist' %}">Hire Pool</a>
+    <a href="{% url 'admin:game_oven_changelist' %}">Ovens</a>
+    <a href="{% url 'admin:game_customerorder_changelist' %}">Orders</a>
+    <a href="{% url 'admin:game_dayreport_changelist' %}">Day Reports</a>
+    <a href="{% url 'admin:game_eventlog_changelist' %}">Event Logs</a>
+    <a href="{% url 'admin:game_adminnote_changelist' %}">Admin Notes</a>
+    <a href="{% url 'admin:game_playersnapshot_changelist' %}">Snapshots</a>
+    <a href="{% url 'admin:game_gamestate_analytics' %}">Analytics</a>
+  </section>
+</div>
+
+{{ block.super }}
+{% endblock %}

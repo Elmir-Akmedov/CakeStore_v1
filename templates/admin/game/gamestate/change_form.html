@@ -1,0 +1,218 @@
+{% extends "admin/change_form.html" %}
+
+{% block after_field_sets %}
+{{ block.super }}
+{% if dashboard %}
+<style>
+  .player-dashboard {
+    margin: 18px 0;
+  }
+  .dashboard-grid {
+    display: grid;
+    gap: 14px;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  }
+  .dashboard-panel {
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--body-bg);
+    padding: 12px;
+    overflow-x: auto;
+  }
+  .dashboard-panel h2 {
+    font-size: 1rem;
+    margin: 0 0 10px;
+  }
+  .dashboard-panel table {
+    width: 100%;
+  }
+  .dashboard-panel th,
+  .dashboard-panel td {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border-color);
+    vertical-align: top;
+  }
+  .dashboard-panel .muted {
+    color: var(--body-quiet-color);
+  }
+</style>
+
+<div class="player-dashboard">
+  <h1>Player Dashboard</h1>
+  <div class="dashboard-grid">
+    <section class="dashboard-panel">
+      <h2>Overview</h2>
+      <table>
+        <tr><th>Status</th><td>{{ dashboard.overview.status }}</td></tr>
+        <tr><th>Timer</th><td>{% if dashboard.overview.timer %}{{ dashboard.overview.timer }} seconds{% else %}<span class="muted">Not running</span>{% endif %}</td></tr>
+        <tr><th>Active Event</th><td>{{ dashboard.overview.active_event }}</td></tr>
+        <tr><th>Upgrades</th><td>{% if dashboard.overview.upgrades %}{{ dashboard.overview.upgrades|join:", " }}{% else %}<span class="muted">None</span>{% endif %}</td></tr>
+      </table>
+    </section>
+
+    <section class="dashboard-panel">
+      <h2>Unlocked Recipes</h2>
+      <table>
+        {% for row in dashboard.recipes %}
+        <tr><td><a href="{{ row.url }}">{{ row.obj.emoji }} {{ row.obj.name }}</a></td><td>{{ row.obj.cake_type }}</td></tr>
+        {% empty %}
+        <tr><td class="muted">No unlocked recipes.</td></tr>
+        {% endfor %}
+      </table>
+    </section>
+
+    <section class="dashboard-panel">
+      <h2>Shelf</h2>
+      <table>
+        <tr><th>Cake</th><th>Slices</th><th>Fresh</th><th>Value</th></tr>
+        {% for row in dashboard.shelf %}
+        <tr>
+          <td><a href="{{ row.url }}">{{ row.obj.recipe.name }}</a></td>
+          <td>{{ row.obj.remaining_slices }}</td>
+          <td>{% if row.fresh %}Fresh{% else %}Stale{% endif %}</td>
+          <td>${{ row.value }}</td>
+        </tr>
+        {% empty %}
+        <tr><td class="muted" colspan="4">Shelf is empty.</td></tr>
+        {% endfor %}
+      </table>
+    </section>
+
+    <section class="dashboard-panel">
+      <h2>Baking</h2>
+      <table>
+        <tr><th>Cake</th><th>Oven</th><th>Progress</th><th>Seconds</th></tr>
+        {% for row in dashboard.baking %}
+        <tr>
+          <td><a href="{{ row.url }}">{{ row.obj.recipe.name }}</a></td>
+          <td>{{ row.obj.oven|default:"-" }}</td>
+          <td>{{ row.progress }}%</td>
+          <td>{{ row.seconds }}</td>
+        </tr>
+        {% empty %}
+        <tr><td class="muted" colspan="4">Nothing baking.</td></tr>
+        {% endfor %}
+      </table>
+    </section>
+
+    <section class="dashboard-panel">
+      <h2>Workers</h2>
+      <table>
+        <tr><th>Name</th><th>Role</th><th>Morale</th><th>Assignment</th></tr>
+        {% for row in dashboard.workers %}
+        <tr>
+          <td><a href="{{ row.url }}">{{ row.obj.name }}</a></td>
+          <td>{{ row.obj.role }}</td>
+          <td>{{ row.obj.morale }}</td>
+          <td>{{ row.obj.assigned_oven|default:"-" }}</td>
+        </tr>
+        {% empty %}
+        <tr><td class="muted" colspan="4">No workers.</td></tr>
+        {% endfor %}
+      </table>
+    </section>
+
+    <section class="dashboard-panel">
+      <h2>Hire Pool</h2>
+      <table>
+        <tr><th>Name</th><th>Role</th><th>Cost</th><th>State</th></tr>
+        {% for row in dashboard.hire_pool %}
+        <tr>
+          <td><a href="{{ row.url }}">{{ row.obj.name }}</a></td>
+          <td>{{ row.obj.role }}</td>
+          <td>${{ row.obj.hire_cost }}</td>
+          <td>{% if row.obj.is_hired %}Hired{% else %}Available{% endif %}</td>
+        </tr>
+        {% empty %}
+        <tr><td class="muted" colspan="4">No hire candidates.</td></tr>
+        {% endfor %}
+      </table>
+    </section>
+
+    <section class="dashboard-panel">
+      <h2>Ovens</h2>
+      <table>
+        <tr><th>Name</th><th>Tier</th><th>Speed</th><th>Active</th></tr>
+        {% for row in dashboard.ovens %}
+        <tr>
+          <td><a href="{{ row.url }}">{{ row.obj.name }}</a></td>
+          <td>{{ row.obj.tier }}</td>
+          <td>{{ row.obj.speed_bonus }}</td>
+          <td>{{ row.obj.is_active }}</td>
+        </tr>
+        {% empty %}
+        <tr><td class="muted" colspan="4">No ovens.</td></tr>
+        {% endfor %}
+      </table>
+    </section>
+
+    <section class="dashboard-panel">
+      <h2>Orders</h2>
+      <table>
+        <tr><th>Customer</th><th>Recipe</th><th>Status</th><th>Revenue</th></tr>
+        {% for row in dashboard.orders %}
+        <tr>
+          <td><a href="{{ row.url }}">{{ row.obj.customer_name }}</a></td>
+          <td>{{ row.obj.recipe.name }}</td>
+          <td>{{ row.obj.status }}</td>
+          <td>${{ row.obj.revenue }}</td>
+        </tr>
+        {% empty %}
+        <tr><td class="muted" colspan="4">No orders.</td></tr>
+        {% endfor %}
+      </table>
+    </section>
+
+    <section class="dashboard-panel">
+      <h2>Reports</h2>
+      <table>
+        <tr><th>Day</th><th>Revenue</th><th>Net</th><th>Orders</th></tr>
+        {% for row in dashboard.reports %}
+        <tr>
+          <td><a href="{{ row.url }}">Day {{ row.obj.day }}</a></td>
+          <td>${{ row.obj.revenue }}</td>
+          <td>${{ row.obj.net_profit }}</td>
+          <td>{{ row.obj.orders_fulfilled }}/{{ row.obj.orders_expired }}</td>
+        </tr>
+        {% empty %}
+        <tr><td class="muted" colspan="4">No reports.</td></tr>
+        {% endfor %}
+      </table>
+    </section>
+
+    <section class="dashboard-panel">
+      <h2>Recent Logs</h2>
+      <table>
+        {% for row in dashboard.logs %}
+        <tr><td><a href="{{ row.url }}">{{ row.obj.timestamp }}</a></td><td>{{ row.obj.icon }} {{ row.obj.message }}</td></tr>
+        {% empty %}
+        <tr><td class="muted">No logs.</td></tr>
+        {% endfor %}
+      </table>
+    </section>
+
+    <section class="dashboard-panel">
+      <h2>Admin Notes</h2>
+      <table>
+        {% for row in dashboard.notes %}
+        <tr><td><a href="{{ row.url }}">{{ row.obj.title }}</a></td><td>{{ row.obj.updated_at }}</td></tr>
+        {% empty %}
+        <tr><td class="muted">No notes.</td></tr>
+        {% endfor %}
+      </table>
+    </section>
+
+    <section class="dashboard-panel">
+      <h2>Snapshots</h2>
+      <table>
+        {% for row in dashboard.snapshots %}
+        <tr><td><a href="{{ row.url }}">{{ row.obj.label }}</a></td><td>{{ row.obj.created_at }}</td></tr>
+        {% empty %}
+        <tr><td class="muted">No snapshots.</td></tr>
+        {% endfor %}
+      </table>
+    </section>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
