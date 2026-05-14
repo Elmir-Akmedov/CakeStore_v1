@@ -99,6 +99,63 @@ RECIPES = [
         'shop_price':800,'unlock_day':30,'unlock_rep':None,
         'unlock_message':'Your reputation has attracted wedding clients!',
     },
+    {
+        'name':'Carrot Cake','cake_type':'Regular','emoji':'🥕',
+        'ingredients':['carrots','flour','sugar','eggs','cream cheese'],
+        'price_small':22,'price_medium':38,'price_large':62,
+        'bake_sec_small':30,'bake_sec_medium':48,'bake_sec_large':70,
+        'ingredient_cost_pct':0.30,'is_unlocked':False,'is_starter':False,
+        'shop_price':160,'unlock_day':12,'unlock_rep':None,'unlock_message':'A wholesome classic!',
+    },
+    {
+        'name':'Tiramisu','cake_type':'Special','emoji':'🍰',
+        'ingredients':['mascarpone','espresso','ladyfingers','eggs','cocoa'],
+        'price_small':26,'price_medium':46,'price_large':74,
+        'bake_sec_small':34,'bake_sec_medium':52,'bake_sec_large':76,
+        'ingredient_cost_pct':0.34,'is_unlocked':False,'is_starter':False,
+        'shop_price':200,'unlock_day':14,'unlock_rep':None,'unlock_message':'Italian perfection.',
+    },
+    {
+        'name':'Black Forest','cake_type':'Special','emoji':'🍒',
+        'ingredients':['chocolate','cherries','cream','kirsch','sponge'],
+        'price_small':26,'price_medium':46,'price_large':74,
+        'bake_sec_small':34,'bake_sec_medium':54,'bake_sec_large':78,
+        'ingredient_cost_pct':0.33,'is_unlocked':False,'is_starter':False,
+        'shop_price':None,'unlock_day':None,'unlock_rep':55,'unlock_message':'A legend arrives!',
+    },
+    {
+        'name':'Mango Mousse','cake_type':'Special','emoji':'🥭',
+        'ingredients':['mango','cream','gelatin','sugar','lime'],
+        'price_small':28,'price_medium':50,'price_large':80,
+        'bake_sec_small':36,'bake_sec_medium':56,'bake_sec_large':80,
+        'ingredient_cost_pct':0.35,'is_unlocked':False,'is_starter':False,
+        'shop_price':280,'unlock_day':18,'unlock_rep':None,'unlock_message':'Tropical vibes!',
+    },
+    {
+        'name':'Pistachio Roll','cake_type':'Special','emoji':'🌿',
+        'ingredients':['pistachio','cream cheese','flour','eggs','cardamom'],
+        'price_small':30,'price_medium':54,'price_large':86,
+        'bake_sec_small':38,'bake_sec_medium':58,'bake_sec_large':84,
+        'ingredient_cost_pct':0.36,'is_unlocked':False,'is_starter':False,
+        'shop_price':None,'unlock_day':None,'unlock_rep':70,'unlock_message':'For the connoisseurs.',
+    },
+    {
+        'name':'Cotton Candy Cake','cake_type':'Special','emoji':'🩷',
+        'ingredients':['cotton candy','vanilla','cream','food colouring','sponge'],
+        'price_small':34,'price_medium':60,'price_large':96,
+        'bake_sec_small':40,'bake_sec_medium':62,'bake_sec_large':88,
+        'ingredient_cost_pct':0.37,'is_unlocked':False,'is_starter':False,
+        'shop_price':400,'unlock_day':25,'unlock_rep':None,'unlock_message':'Fairground magic!',
+    },
+]
+
+DRINKS = [
+    {'name':'Espresso',     'emoji':'☕','brew_time_sec':8,  'price':4.00,'ingredient_cost_pct':0.20,'is_unlocked':True, 'is_starter':True, 'unlock_day':None},
+    {'name':'Latte',        'emoji':'☕','brew_time_sec':12, 'price':6.00,'ingredient_cost_pct':0.22,'is_unlocked':True, 'is_starter':True, 'unlock_day':None},
+    {'name':'Hot Chocolate','emoji':'🍫','brew_time_sec':15, 'price':5.50,'ingredient_cost_pct':0.24,'is_unlocked':False,'is_starter':False,'unlock_day':5},
+    {'name':'Lemonade',     'emoji':'🍋','brew_time_sec':10, 'price':4.50,'ingredient_cost_pct':0.18,'is_unlocked':False,'is_starter':False,'unlock_day':4},
+    {'name':'Matcha Latte', 'emoji':'🍵','brew_time_sec':18, 'price':7.00,'ingredient_cost_pct':0.26,'is_unlocked':False,'is_starter':False,'unlock_day':8},
+    {'name':'Cold Brew',    'emoji':'🧊','brew_time_sec':5,  'price':6.50,'ingredient_cost_pct':0.20,'is_unlocked':False,'is_starter':False,'unlock_day':10},
 ]
 
 
@@ -106,13 +163,19 @@ class Command(BaseCommand):
     help = 'Seed cake recipes'
 
     def handle(self, *args, **kwargs):
+        from game.models import DrinkRecipe
         created = updated = 0
         for data in RECIPES:
-            obj, made = CakeRecipe.objects.update_or_create(
-                name=data['name'], defaults=data)
-            if made:
-                created += 1
-            else:
-                updated += 1
+            obj, made = CakeRecipe.objects.update_or_create(name=data['name'], defaults=data)
+            if made: created += 1
+            else: updated += 1
+
+        dc = du = 0
+        for data in DRINKS:
+            obj, made = DrinkRecipe.objects.update_or_create(name=data['name'], defaults=data)
+            if made: dc += 1
+            else: du += 1
+
         self.stdout.write(self.style.SUCCESS(
-            f'✅  Recipes seeded — {created} created, {updated} updated.'))
+            f'✅ Cakes: {created} created, {updated} updated. '
+            f'Drinks: {dc} created, {du} updated.'))

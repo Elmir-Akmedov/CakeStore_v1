@@ -136,6 +136,14 @@ def api_fulfill(request):
 
 
 @login_required
+@csrf_exempt
+@require_http_methods(['POST'])
+def api_brew(request):
+    _inject_user(request)
+    data = _body(request)
+    return _run(engine.start_brewing, data.get('drink_id'))
+
+@login_required
 @require_http_methods(['GET'])
 def api_hire_pool(request):
     _inject_user(request)

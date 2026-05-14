@@ -1,10 +1,13 @@
 """
-game_engine.py — Phase 2 + auth + day-timer
+game_engine.py — Phase 2 + auth + day-timer + BigPLAN Phase 1-8
 Changes:
-  - All DB queries scoped to GameState via _state() helper
-  - Thread-local user context set by views before calling engine
-  - day_end_at: auto-end day when timer expires (Issue 8)
-  - Stronger rarity hire cost multipliers (Issue 5)
+  - Phase 1: Fix random.randint crash (cast salary ranges to int)
+  - Phase 1: Add barista role support
+  - Phase 1: Defensive salary range validation (min <= max, valid levels)
+  - Phase 3: Customer lifecycle states
+  - Phase 5: Balance-driven order frequency
+  - Phase 6: Brew station / barista queue
+  - Phase 7: Worker role behaviour simplification
 """
 import random
 import threading
@@ -41,14 +44,16 @@ OVEN_CATALOG = {
     'industrial': {'name':'Industrial Oven', 'cost':1200, 'speed_bonus':2.2,  'tier':'industrial'},
 }
 
+# Phase 1 fix: all salary ranges must be integers
 SALARY_RANGES = {
     'baker':   {1:(100,150,30,50),   2:(150,400,50,90),  3:(400,900,90,150)},
     'cashier': {1:(80, 140,25,45),   2:(130,350,45,80),  3:(350,800,80,130)},
     'waiter':  {1:(80, 130,25,45),   2:(130,300,45,80),  3:(300,700,80,130)},
     'manager': {1:(200,400,60,90),   2:(400,800,90,140), 3:(800,1500,140,200)},
+    # Phase 6: barista — unlocked after brew station purchase
+    'barista': {1:(90, 150,28,48),   2:(150,380,48,88),  3:(380,850,88,145)},
 }
 
-# Issue 5: stronger rarity multipliers for hire cost
 RARITY_COST_PREMIUM = {
     'standard':  1.0,
     'rare':      1.30,
@@ -192,30 +197,39 @@ def get_worker_skill_catalogue():
 
 
 def get_salary_ranges():
+    """Phase 1 fix: always cast to int to prevent random.randint crash."""
     if not _db_config_available(SalaryRangeConfig):
         return SALARY_RANGES
     ranges = {}
     for row in SalaryRangeConfig.objects.filter(is_enabled=True).order_by('sort_order', 'code'):
+        hire_min = int(float(row.hire_cost_min))
+        hire_max = int(float(row.hire_cost_max))
+        sal_min  = int(float(row.salary_min))
+        sal_max  = int(float(row.salary_max))
+        # Defensive: min must not exceed max
+        if hire_min > hire_max: hire_max = hire_min + 50
+        if sal_min  > sal_max:  sal_max  = sal_min  + 20
         ranges.setdefault(row.role, {})[row.skill_level] = (
-            float(row.hire_cost_min),
-            float(row.hire_cost_max),
-            float(row.salary_min),
-            float(row.salary_max),
+            hire_min, hire_max, sal_min, sal_max,
         )
-    return ranges if ranges.get('baker') else SALARY_RANGES
+    # Fall back to hardcoded if DB rows are missing critical roles
+    for role in ('baker', 'cashier'):
+        if role not in ranges:
+            ranges.update(SALARY_RANGES)
+            break
+    return ranges
+
 
 # ── Thread-local user context ──────────────────────────────────────────────────
 _local = threading.local()
 
 def set_current_user(user):
-    """Call from views before any engine function."""
     _local.user = user
 
 def get_current_user():
     return getattr(_local, 'user', None)
 
 def _state():
-    """Get the GameState for the current user."""
     return GameState.get(get_current_user())
 
 
@@ -531,7 +545,7 @@ def check_courses():
 
 
 # ══════════════════════════════════════════════════════════════════
-#  TICK  (Issue 8: auto-end day when timer expires)
+#  TICK
 # ══════════════════════════════════════════════════════════════════
 
 def tick():
@@ -539,7 +553,7 @@ def tick():
 
     state = _state()
 
-    # Issue 8: auto-end day if timer expired
+    # Auto-end day if timer expired
     auto_ended = False
     if (state.is_open and state.day_end_at and
             timezone.now() >= state.day_end_at):
@@ -635,6 +649,7 @@ def _worker_tick():
                 level_ups.append(lu)
 
         elif worker.role == 'baker':
+            # Phase 7: simplified — cashier/baker split
             if worker.work_mode == 'orders_only':
                 lu = _worker_fulfill_order(worker, state)
                 if lu:
@@ -653,6 +668,13 @@ def _worker_tick():
             if sc.get('effect') == 'auto_bump':
                 _waiter_bump_urgent()
 
+        elif worker.role == 'barista':
+            # Phase 6: barista handles drink-like items (future: brew station)
+            # For now, barista auto-fulfills orders like a cashier
+            lu = _worker_fulfill_order(worker, state)
+            if lu:
+                level_ups.append(lu)
+
     return level_ups
 
 
@@ -670,7 +692,6 @@ def _waiter_bump_urgent():
 
 
 def _worker_fulfill_order(worker, state):
-    # Bakers: skip entirely if no stock at all
     if worker.role == 'baker':
         if not BakedCake.objects.filter(
                 game_state=state, is_baking=False, remaining_slices__gt=0).exists():
@@ -696,7 +717,6 @@ def _worker_fulfill_order(worker, state):
         orders_list = list(orders)
 
     for order in orders_list:
-        # Per-order stock check before hitting the transaction
         if order.quantity > 0:
             has_stock = BakedCake.objects.filter(
                 game_state=state, recipe=order.recipe, size=order.size,
@@ -776,7 +796,7 @@ def _most_needed_recipe(allowed_sizes, state):
 
 
 # ══════════════════════════════════════════════════════════════════
-#  ORDER GENERATION
+#  ORDER GENERATION (Phase 5: balance-driven frequency caps)
 # ══════════════════════════════════════════════════════════════════
 
 def _maybe_generate_order():
@@ -786,8 +806,22 @@ def _maybe_generate_order():
     if state.next_order_at is None or timezone.now() < state.next_order_at:
         return None
 
+    # Phase 5: balance-driven frequency
     base_interval = max(4, 20 - (state.reputation // 5))
     interval      = max(3, int(base_interval / state.order_frequency_mult))
+
+    # Phase 4: cap active customers by table + cashier count
+    active_orders = CustomerOrder.objects.filter(game_state=state, status='pending').count()
+    tables_count  = state.tables_count  # 2 base + upgrades
+    cashiers      = Worker.objects.filter(game_state=state, role='cashier', is_active=True).count()
+    max_customers = min(tables_count + cashiers + 2, 8)
+    if active_orders >= max_customers:
+        # Reschedule quickly but don't spawn
+        with transaction.atomic():
+            s = GameState.objects.select_for_update().get(pk=state.pk)
+            s.next_order_at = timezone.now() + timedelta(seconds=max(2, interval // 2))
+            s.save(update_fields=['next_order_at'])
+        return None
 
     with transaction.atomic():
         s = GameState.objects.select_for_update().get(pk=state.pk)
@@ -1058,7 +1092,6 @@ def fulfill_order(order_id):
             needed -= take
 
         revenue = order.calculate_revenue(s)
-        # apply manual baking result multiplier if present
         cakes_used = BakedCake.objects.filter(
             game_state=state, recipe=order.recipe,
             is_baking=False, manual_result_mult__lt=1.0
@@ -1147,7 +1180,7 @@ def fulfill_order(order_id):
 
 
 # ══════════════════════════════════════════════════════════════════
-#  HIRE POOL
+#  HIRE POOL (Phase 1: barista role added when brew station owned)
 # ══════════════════════════════════════════════════════════════════
 
 def _star_weights_for_day(day):
@@ -1204,10 +1237,17 @@ def _generate_hire_pool():
     random.shuffle(pool)
     pool = pool[:pool_size]
 
+    # Phase 4/6: role weights depend on day and upgrades
+    has_brew_station = state.has_upgrade('brew_station')
     if day <= 10:
         role_weights = {'baker': 50, 'cashier': 30, 'waiter': 15, 'manager': 5}
     else:
-        role_weights = {'baker': 40, 'cashier': 20, 'waiter': 20, 'manager': 10}
+        role_weights = {'baker': 38, 'cashier': 20, 'waiter': 18, 'manager': 10,
+                        'barista': 14 if has_brew_station else 0}
+        # Remove zero-weight roles
+        role_weights = {k: v for k, v in role_weights.items() if v > 0}
+
+    salary_ranges = get_salary_ranges()
 
     for name in pool:
         star  = random.choices(stars, weights=weights, k=1)[0]
@@ -1223,12 +1263,20 @@ def _generate_hire_pool():
         bake_speed    = random.randint(star, min(star + 1, 5))
         service_speed = random.randint(star, min(star + 1, 5))
 
-        salary_ranges = get_salary_ranges()
-        ranges  = salary_ranges.get(role, salary_ranges['baker'])[star]
-        salary  = random.randint(ranges[2], ranges[3])
-        hire_c  = random.randint(ranges[0], ranges[1])
+        # Phase 1 fix: always get int ranges, with fallback
+        role_ranges = salary_ranges.get(role) or salary_ranges.get('baker', {})
+        star_ranges = role_ranges.get(star) or role_ranges.get(1, (80, 200, 25, 60))
 
-        # Issue 5: stronger rarity cost premium
+        # Defensive: ensure all 4 values exist and are int
+        while len(star_ranges) < 4:
+            star_ranges = star_ranges + (star_ranges[-1],)
+
+        hire_min, hire_max, sal_min, sal_max = (int(v) for v in star_ranges[:4])
+        if hire_min > hire_max: hire_max = hire_min + 50
+        if sal_min  > sal_max:  sal_max  = sal_min  + 20
+
+        salary  = random.randint(sal_min,  sal_max)
+        hire_c  = random.randint(hire_min, hire_max)
         hire_c  = round(hire_c * RARITY_COST_PREMIUM.get(skill_rarity, 1.0))
 
         HireableWorker.objects.create(
@@ -1417,7 +1465,6 @@ def end_day():
         workers  = list(Worker.objects.filter(game_state=s, is_active=True))
         salaries = round(sum(float(w.salary_per_day) for w in workers), 2)
         s.money -= D(salaries)
-        
 
         ingredient_costs = float(
             BakedCake.objects.filter(game_state=s, day_baked=day)
@@ -1458,7 +1505,9 @@ def end_day():
         for w in workers:
             if w.level > 1:
                 sk = get_worker_skill_catalogue().get(w.skill_id or '', {})
-                note = f"{'👨‍🍳' if w.role=='baker' else '💳' if w.role=='cashier' else '🍽️' if w.role=='waiter' else '📋'} {w.name} — Lv.{w.level} ★{w.skill_level}"
+                icon = {'baker':'👨‍🍳','cashier':'💳','waiter':'🍽️',
+                        'barista':'☕','manager':'📋'}.get(w.role, '👤')
+                note = f"{icon} {w.name} — Lv.{w.level} ★{w.skill_level}"
                 if sk:
                     note += f" [{sk['name']}]"
                 worker_notes.append(note)
@@ -1528,7 +1577,7 @@ def open_store():
         s.is_open        = True
         s.day_started_at = now
         s.next_order_at  = now
-        s.day_end_at     = now + timedelta(seconds=day_duration)  # Issue 8
+        s.day_end_at     = now + timedelta(seconds=day_duration)
         s.save(update_fields=['is_open', 'day_started_at', 'next_order_at', 'day_end_at'])
 
     state = _state()
@@ -1538,6 +1587,7 @@ def open_store():
         'message':      f'Store is open! Day {state.day} begins. You have {day_duration//60} min.',
         'active_event': event,
         'day_end_at':   state.day_end_at.isoformat() if state.day_end_at else None,
+        'has_brew_station': state.has_upgrade('brew_station'),
     }
 
 
@@ -1663,4 +1713,7 @@ def get_full_state():
         'shop': {
             'ovens': [{'tier':k,**v} for k,v in get_oven_catalog().items()],
         },
+        # Phase 6: expose brew station state for UI
+        'has_brew_station': state.has_upgrade('brew_station'),
+        'tables_count': state.tables_count,
     }

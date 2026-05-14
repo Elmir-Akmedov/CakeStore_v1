@@ -20,4 +20,5 @@ urlpatterns = [
     path('api/buy-upgrade/',   views.api_buy_upgrade, name='api_buy_upgrade'),
     path('api/buy-recipe/',    views.api_buy_recipe,  name='api_buy_recipe'),
     path('api/start-course/',  views.api_start_course,name='api_start_course'),
+    path('api/brew/', views.api_brew, name='api_brew'),
 ]

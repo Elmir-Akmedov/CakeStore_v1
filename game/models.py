@@ -172,6 +172,7 @@ ROLE_SKILLS = {
     'cashier': ['quick_service','charm','upselling','cash_handling','regular_memory'],
     'waiter':  ['floor_reading','presentation','conflict_resolution','speed_walking','sommelier_eye'],
     'manager': ['staff_motivation','cost_control','scheduling','talent_eye','crisis_management'],
+    'barista': ['espresso_craft','latte_art','cold_brew_mastery','tea_ceremony','blend_intuition'],
 }
 
 SKILL_MASTERY_NAMES = {1:'Novice', 2:'Apprentice', 3:'Skilled', 4:'Expert', 5:'Master'}
@@ -185,6 +186,7 @@ KITCHEN_UPGRADES = {
     'recipe_book':         {'name':'Recipe Book',         'emoji':'📖','cost':350, 'desc':'Workers bake with better variety in casual mode'},
     'loyalty_board':       {'name':'Loyalty Board',       'emoji':'🎖️','cost':400, 'desc':'Regular customers return 30% more often'},
     'music_system':        {'name':'Music System',        'emoji':'🎵','cost':250, 'desc':'All customer patience +8% (ambient music)'},
+    'brew_station': {'name':'Brew Station', 'emoji':'☕', 'cost':350, 'desc':'Make drinks — coffee, tea, lemonade. Requires a Barista.'},
 }
 
 DAILY_EVENTS = [
@@ -497,6 +499,7 @@ class Worker(models.Model):
         ('cashier', 'Cashier'),
         ('waiter',  'Waiter'),
         ('manager', 'Manager'),
+        ('barista', 'Barista'),
     ]
     WORK_MODE_CHOICES = [
         ('orders_only','Orders Only'),
@@ -789,12 +792,14 @@ class EventLog(models.Model):
     icon      = models.CharField(max_length=10, default='ℹ️')
     message   = models.CharField(max_length=300)
     log_type  = models.CharField(max_length=20, default='info')
+    is_important = models.BooleanField(default=False)
 
     class Meta: ordering = ['-timestamp']
 
     def to_dict(self):
         return {'id':self.pk,'day':self.day,'timestamp':self.timestamp.isoformat(),
-                'icon':self.icon,'message':self.message,'log_type':self.log_type}
+                'icon':self.icon,'message':self.message,'log_type':self.log_type,
+                'is_important':self.is_important}
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -836,6 +841,80 @@ class DayReport(models.Model):
             'best_seller':self.best_seller,'best_seller_count':self.best_seller_count,
         }
 
+class DrinkRecipe(models.Model):
+    name               = models.CharField(max_length=100, unique=True)
+    emoji              = models.CharField(max_length=10, default='☕')
+    brew_time_sec      = models.IntegerField(default=15)
+    price              = models.DecimalField(max_digits=6, decimal_places=2, default=5.00)
+    ingredient_cost_pct= models.FloatField(default=0.20)
+    is_unlocked        = models.BooleanField(default=False)
+    is_starter         = models.BooleanField(default=False)
+    unlock_day         = models.IntegerField(null=True, blank=True)
+
+    def __str__(self): return self.name
+
+    def to_dict(self):
+        return {
+            'id': self.pk, 'name': self.name, 'emoji': self.emoji,
+            'brew_time_sec': self.brew_time_sec,
+            'price': float(self.price),
+            'ingredient_cost_pct': self.ingredient_cost_pct,
+            'is_unlocked': self.is_unlocked,
+            'is_starter': self.is_starter,
+            'unlock_day': self.unlock_day,
+        }
+
+
+class BrewStation(models.Model):
+    game_state       = models.ForeignKey(
+        GameState, on_delete=models.CASCADE, related_name='brew_stations', null=True, blank=True)
+    name             = models.CharField(max_length=100)
+    is_active        = models.BooleanField(default=True)
+    purchased_on_day = models.IntegerField(default=1)
+    cost             = models.DecimalField(max_digits=8, decimal_places=2, default=0)
+    brews_count      = models.IntegerField(default=0)
+
+    def __str__(self): return self.name
+
+    @property
+    def is_busy(self):
+        return BrewingDrink.objects.filter(station=self, is_brewing=True).exists()
+
+    def to_dict(self):
+        return {
+            'id': self.pk, 'name': self.name,
+            'is_active': self.is_active, 'is_busy': self.is_busy,
+        }
+
+
+class BrewingDrink(models.Model):
+    game_state      = models.ForeignKey(
+        GameState, on_delete=models.CASCADE, related_name='brewing_drinks', null=True, blank=True)
+    recipe          = models.ForeignKey(DrinkRecipe, on_delete=models.CASCADE)
+    station         = models.ForeignKey(BrewStation, null=True, blank=True, on_delete=models.SET_NULL)
+    is_brewing      = models.BooleanField(default=True)
+    brew_finish_at  = models.DateTimeField(null=True, blank=True)
+    brew_duration_sec = models.IntegerField(default=15)
+    day_brewed      = models.IntegerField(default=1)
+    ingredient_cost = models.DecimalField(max_digits=6, decimal_places=2, default=0)
+
+    def __str__(self): return f"{self.recipe.name} (brewing)"
+
+    @property
+    def seconds_remaining(self):
+        if not self.is_brewing or not self.brew_finish_at: return 0
+        return max(0.0, (self.brew_finish_at - timezone.now()).total_seconds())
+
+    def to_dict(self):
+        return {
+            'id': self.pk, 'recipe_id': self.recipe_id,
+            'recipe_name': self.recipe.name, 'emoji': self.recipe.emoji,
+            'is_brewing': self.is_brewing,
+            'seconds_remaining': round(self.seconds_remaining, 1),
+            'brew_finish_at': self.brew_finish_at.isoformat() if self.brew_finish_at else None,
+            'brew_duration_sec': self.brew_duration_sec,
+            'station_id': self.station_id,
+        }
 
 class BaseConfigModel(models.Model):
     code = models.CharField(max_length=80, unique=True)

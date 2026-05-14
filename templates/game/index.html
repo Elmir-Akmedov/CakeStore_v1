@@ -111,6 +111,8 @@
                 onclick="switchTab('left-tabs','tab-baking')">⏳ Baking</button>
         <button class="tab-btn" data-tab="tab-recipes"
                 onclick="switchTab('left-tabs','tab-recipes')">📖 Recipes</button>
+        <button class="tab-btn" data-tab="tab-drinks"
+                onclick="switchTab('left-tabs','tab-drinks')">☕ Drinks</button>
         <button class="tab-btn" data-tab="tab-kitchen"
                 onclick="openKitchenPopup()">🍳 Kitchen</button>
       </div>
@@ -119,6 +121,9 @@
       <div id="tab-recipes" class="tab-content">
         <!-- Issue 2: panel starts empty, renderRecipeShop fills it after G loads -->
         <div id="panel-recipe-shop" style="padding:0.5rem;display:flex;flex-direction:column;gap:0.5rem"></div>
+      </div>
+      <div id="tab-drinks" class="tab-content">
+        <div id="panel-drinks" style="padding:0.5rem;display:flex;flex-direction:column;gap:0.5rem;"></div>
       </div>
     </div>
 

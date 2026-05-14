@@ -307,6 +307,7 @@ function render() {
   renderReportsTab();
   renderNotificationBadge();
   updateCafeScene(G);
+  renderDrinksTab();
 }
 
 // ── Top Bar ───────────────────────────────────────────────────────────────────
@@ -1344,6 +1345,47 @@ function goToStep(n) {
   if(n===2) setupShapeStep();
   else if(n===3) setupDecoStep();
   else if(n===4) setupOvenStep();
+}
+
+function renderDrinksTab() {
+  const el = $('panel-drinks'); if (!el) return;
+  const drinks = G.drink_recipes || [];
+  const hasStation = (G.brew_stations||[]).length > 0;
+
+  if (!drinks.length) {
+    el.innerHTML = `<div class="empty-state"><div class="empty-icon">☕</div>No drinks yet. Run seed_recipes.</div>`;
+    return;
+  }
+
+  el.innerHTML = (!hasStation ? `
+    <div style="background:var(--surface2);padding:8px;font-size:9px;color:var(--cream-dim);border-left:3px solid var(--gold2);">
+      ☕ Buy a <strong style="color:var(--gold2);">Brew Station</strong> from Upgrades to unlock drinks!
+    </div>` : '') +
+  drinks.map(d => {
+    const locked = !d.is_unlocked;
+    return `
+    <div style="background:var(--surface);padding:7px;display:flex;align-items:center;gap:8px;
+      border-top:2px solid ${locked?'var(--border-dark)':'var(--border-light)'};
+      border-left:2px solid ${locked?'var(--border-dark)':'var(--border-light)'};
+      border-right:2px solid var(--border-dark);border-bottom:2px solid var(--border-dark);
+      opacity:${locked?'0.6':'1'};">
+      <span style="font-size:1.4rem;">${d.emoji}</span>
+      <div style="flex:1;">
+        <div style="font-size:10px;font-weight:700;">${locked?'???':d.name}</div>
+        <div style="font-size:8px;color:var(--muted);">
+          ${locked ? (d.unlock_day?`📅 Day ${d.unlock_day}`:'Locked') : `${d.brew_time_sec}s · ${fmt(d.price)} · ${Math.round(d.ingredient_cost_pct*100)}% cost`}
+        </div>
+      </div>
+      ${!locked && hasStation ? `<button class="btn btn-info btn-sm" style="font-size:9px;"
+        onclick="brewDrink(${d.id})">☕ Brew</button>` : ''}
+    </div>`;
+  }).join('');
+}
+
+async function brewDrink(drinkId) {
+  const r = await api('/api/brew/', {drink_id: drinkId});
+  toast(r.message, r.ok ? 'success' : 'error');
+  if (r.ok) fetchState();
 }
 
 function setBakeStep(n) {
