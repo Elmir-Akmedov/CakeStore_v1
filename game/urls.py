@@ -21,4 +21,6 @@ urlpatterns = [
     path('api/buy-recipe/',    views.api_buy_recipe,  name='api_buy_recipe'),
     path('api/start-course/',  views.api_start_course,name='api_start_course'),
     path('api/brew/', views.api_brew, name='api_brew'),
+    path('api/advance-lifecycle/', views.api_advance_lifecycle, name='api_advance_lifecycle'),
+    path('api/cancel-customer/', views.api_cancel_customer, name='api_cancel_customer'),
 ]

@@ -799,11 +799,24 @@ def _most_needed_recipe(allowed_sizes, state):
 #  ORDER GENERATION (Phase 5: balance-driven frequency caps)
 # ══════════════════════════════════════════════════════════════════
 
+def _get_queue_state(state):
+    pending = CustomerOrder.objects.filter(game_state=state, status='pending')
+    return {
+        'queue': pending.filter(lifecycle_state__in=['queued','ordering']).count(),
+        'tables': pending.filter(lifecycle_state__in=['waiting_for_food','seated']).count(),
+        'paying': pending.filter(lifecycle_state='paying').count(),
+    }
+
 def _maybe_generate_order():
     state = _state()
     if not state.is_open:
         return None
     if state.next_order_at is None or timezone.now() < state.next_order_at:
+        return None
+    qs = _get_queue_state(state)
+
+    # No room in queue
+    if qs['queue'] >= state.max_queue_size:
         return None
 
     # Phase 5: balance-driven frequency
@@ -829,6 +842,8 @@ def _maybe_generate_order():
         s.save(update_fields=['next_order_at'])
 
     recipes = list(unlocked_recipes_for(state))
+    has_brew = state.has_upgrade('brew_station')
+    recipes = [r for r in recipes if not (getattr(r, 'requires_brew_station', False) and not has_brew)]
     if not recipes:
         return None
 
@@ -884,6 +899,14 @@ def _maybe_generate_order():
             order_type = 'standard'
             quantity, pieces = (1, 0) if random.random() < 0.65 else (0, random.randint(1, SIZE_SLICES[size] // 2))
 
+    # --- MOVED TABLE CHECK HERE ---
+    # Order needs table but all full
+    needs_table = order_type in ('bulk', 'standard')
+    if needs_table and qs['tables'] >= state.tables_count:
+        # Customer leaves immediately, no order created
+        log_event('🚪', 'Customer left — no tables available.', log_type='warning')
+        return None
+
     base_patience = {
         'urgent':   random.randint(60, 110),
         'bulk':     random.randint(280, 450),
@@ -907,6 +930,13 @@ def _maybe_generate_order():
         expires_at=timezone.now() + timedelta(seconds=patience),
         day_placed=state.day,
     )
+    queue_pos = CustomerOrder.objects.filter(
+        game_state=state, status='pending',
+        lifecycle_state__in=['queued','ordering']
+    ).count()
+    order.queue_position = queue_pos
+    order.lifecycle_state = 'queued'
+    order.save(update_fields=['queue_position', 'lifecycle_state'])
 
     if spawn_todays:
         with transaction.atomic():
@@ -932,7 +962,15 @@ def _expire_orders():
                 return 0
 
             s = GameState.objects.select_for_update().get(pk=state.pk)
-            expired.update(status='expired')
+            expired.update(status='expired', lifecycle_state='expired')
+            # Re-number remaining queue positions
+            remaining = CustomerOrder.objects.filter(
+                game_state=state, status='pending',
+                lifecycle_state__in=['queued','ordering']
+            ).order_by('placed_at')
+            for i, o in enumerate(remaining):
+                o.queue_position = i
+                o.save(update_fields=['queue_position'])
 
             rep_mult = 1.0
             waiters  = Worker.objects.filter(game_state=state, role='waiter', is_active=True)
@@ -1131,11 +1169,14 @@ def fulfill_order(order_id):
 
         total_earned = revenue + tip
 
-        order.status       = 'fulfilled'
+        order.status = 'fulfilled'
+        order.lifecycle_state = 'fulfilled'
+        order.table_slot = None
+        order.queue_position = None
         order.fulfilled_at = timezone.now()
-        order.revenue      = D(revenue)
-        order.tip          = D(tip)
-        order.save(update_fields=['status', 'fulfilled_at', 'revenue', 'tip'])
+        order.revenue = D(revenue)
+        order.tip = D(tip)
+        order.save(update_fields=['status','lifecycle_state', 'fulfilled_at', 'revenue', 'tip'])
 
         s.money           += D(total_earned)
         s.total_revenue   += D(total_earned)
@@ -1178,6 +1219,38 @@ def fulfill_order(order_id):
         'revenue': total_earned,
     }
 
+def advance_customer_lifecycle(order_id):
+    """Move a customer to the next lifecycle stage."""
+    state = _state()
+    order = CustomerOrder.objects.get(pk=order_id, game_state=state)
+    transitions = {
+        'queued': 'ordering',
+        'ordering': 'waiting_for_food',
+        'waiting_for_food': 'seated',
+        'seated': 'paying',
+    }
+    next_state = transitions.get(order.lifecycle_state)
+    if next_state:
+        order.lifecycle_state = next_state
+        order.save(update_fields=['lifecycle_state'])
+    return {'ok': True, 'lifecycle_state': order.lifecycle_state}
+
+def cancel_customer(order_id):
+    state = _state()
+    with transaction.atomic():
+        order = CustomerOrder.objects.select_for_update().get(
+            pk=order_id, game_state=state, status='pending')
+        order.status = 'expired'
+        order.lifecycle_state = 'canceled'
+        order.table_slot = None
+        order.save(update_fields=['status', 'lifecycle_state', 'table_slot'])
+        # Rep penalty based on how far along they were
+        penalty = {'queued': 1, 'ordering': 2, 'waiting_for_food': 4, 'seated': 3}.get(
+            order.lifecycle_state, 2)
+        s = GameState.objects.select_for_update().get(pk=state.pk)
+        s.reputation = max(0, s.reputation - penalty)
+        s.save(update_fields=['reputation'])
+    return {'ok': True}
 
 # ══════════════════════════════════════════════════════════════════
 #  HIRE POOL (Phase 1: barista role added when brew station owned)
@@ -1392,7 +1465,15 @@ def buy_upgrade(uid):
         owned.append(uid)
         s.owned_upgrades = owned
         s.money         -= D(cfg['cost'])
-        s.save(update_fields=['owned_upgrades', 'money'])
+        if uid == 'extra_table':
+            s.tables_count = min(s.tables_count + 1, 8)
+            s.save(update_fields=['owned_upgrades', 'money', 'tables_count'])
+        elif uid == 'cashier_stand_2':
+            s.cashier_stands = min(s.cashier_stands + 1, 3)
+            s.max_queue_size = s.cashier_stands * 3
+            s.save(update_fields=['owned_upgrades', 'money', 'cashier_stands', 'max_queue_size'])
+        else:
+            s.save(update_fields=['owned_upgrades', 'money'])
     log_event(cfg['emoji'], f"Purchased: {cfg['name']}!", log_type='success')
     return {'ok': True, 'message': f"Purchased {cfg['name']}!", 'upgrade_id': uid}
 

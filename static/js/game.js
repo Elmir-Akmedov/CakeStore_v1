@@ -74,10 +74,20 @@ function toast(msg, type='info') {
 }
 
 function showScreen(id) {
-  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-  $(id).classList.add('active');
-  if (id !== 'screen-game') stopCafeScene();
-  else if (typeof initCafeScene !== 'undefined') initCafeScene();
+document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+$(id).classList.add('active');
+if (id === 'screen-game') {
+// Boot Phaser if not already running
+if (typeof initPhaserGame !== 'undefined') initPhaserGame();
+// Wire oven-click → bake modal
+if (typeof PhaserBridge !== 'undefined') {
+PhaserBridge.onOvenClicked(ovenId => openBakeModal(ovenId));
+PhaserBridge.onShowBrewTab(() => {
+const brewTab = document.querySelector('[data-tab="tab-drinks"]');
+if (brewTab) brewTab.style.display = 'flex';
+});
+}
+}
 }
 
 function switchTab(groupId, tabId) {
@@ -294,7 +304,9 @@ function handleEvents(events) {
 }
 
 function render() {
-  if (!G.state) return;
+if (!G.state) return;
+// Push to Phaser cafe scene
+if (typeof PhaserBridge !== 'undefined') PhaserBridge.push(G);
   renderTopBar();
   renderEventBanner();
   renderOvens();
@@ -1492,12 +1504,33 @@ function continueFromReport(){showBriefing();}
 async function fulfillOrder(id,btn){
   const card=$(`order-card-${id}`);if(card)card.style.opacity='0.3';btn.disabled=true;
   const r=await api('/api/fulfill/',{order_id:id});
-  if(r.ok){toast(r.message,'success');if(card)card.remove();fetchState();}
+  if(r.ok){
+  toast(r.message,'success');
+  if(card)card.remove();
+  if(typeof PhaserBridge!=='undefined') PhaserBridge.fulfillPopup(r.revenue||0);
+  fetchState();
+  }
   else{toast(r.message,'error');if(card)card.style.opacity='1';btn.disabled=false;}
 }
-async function buyOven(tier){const r=await api('/api/buy-oven/',{tier});toast(r.message,r.ok?'success':'error');if(r.ok)fetchState();}
-async function buyUpgrade(id){const r=await api('/api/buy-upgrade/',{upgrade_id:id});toast(r.message,r.ok?'success':'error');if(r.ok)fetchState();}
-async function buyRecipe(id){
+
+async function buyOven(tier){
+const r=await api('/api/buy-oven/',{tier});
+toast(r.message,r.ok?'success':'error');
+if(r.ok){
+if(typeof PhaserBridge!=='undefined' && r.oven) PhaserBridge.ovenBought(r.oven);
+fetchState();
+}
+}
+async function buyUpgrade(id){
+const r=await api('/api/buy-upgrade/',{upgrade_id:id});
+toast(r.message,r.ok?'success':'error');
+if(r.ok){
+const cfg=(G.upgrades||[]).find(u=>u.id===id);
+if(typeof PhaserBridge!=='undefined') PhaserBridge.upgradeBought(id, cfg?.name||id);
+fetchState();
+}
+
+}async function buyRecipe(id){
   const r=await api('/api/buy-recipe/',{recipe_id:id});
   if(r.ok){
     toast(r.message,'success');
@@ -1519,9 +1552,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (G.state?.day_end_at) _dayEndAt = G.state.day_end_at;
 
     if (data.state?.game_started) {
-      showScreen('screen-game');
-      startPolling();
-      initCafeScene();
+    showScreen('screen-game');
+    startPolling();
+    // Phaser boots inside showScreen now
     } else {
       // Issue 6: always show start screen when no game running
       showScreen('screen-start');

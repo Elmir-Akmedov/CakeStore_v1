@@ -187,6 +187,8 @@ KITCHEN_UPGRADES = {
     'loyalty_board':       {'name':'Loyalty Board',       'emoji':'🎖️','cost':400, 'desc':'Regular customers return 30% more often'},
     'music_system':        {'name':'Music System',        'emoji':'🎵','cost':250, 'desc':'All customer patience +8% (ambient music)'},
     'brew_station': {'name':'Brew Station', 'emoji':'☕', 'cost':350, 'desc':'Make drinks — coffee, tea, lemonade. Requires a Barista.'},
+    'extra_table':     {'name':'Extra Table',     'emoji':'🪑', 'cost':350, 'desc':'+1 table, serve more customers at once'},
+    'cashier_stand_2': {'name':'Second Till',     'emoji':'🖥️', 'cost':600, 'desc':'2nd cashier lane, doubles checkout throughput'},
 }
 
 DAILY_EVENTS = [
@@ -234,6 +236,10 @@ class GameState(models.Model):
     critic_fresh_served = models.IntegerField(default=0)
     todays_guest_id     = models.IntegerField(null=True, blank=True)
     course_discount_active = models.BooleanField(default=False)
+    tables_count = models.IntegerField(default=2)  # grows with upgrades
+    cashier_stands = models.IntegerField(default=1)
+    max_queue_size = models.IntegerField(default=3)   # grows with upgrades
+
 
     class Meta:
         verbose_name = "Game State"
@@ -384,6 +390,9 @@ class GameState(models.Model):
             'owned_upgrades':    self.owned_upgrades or [],
             'rush_active':       bool(self.rush_ends_at and timezone.now() < self.rush_ends_at),
             'course_discount':   self.course_discount_active,
+            'tables_count':      self.tables_count,
+            'cashier_stands': self.cashier_stands,
+            'max_queue_size': self.max_queue_size,
             # Issue 8: day timer
             'day_end_at':        self.day_end_at.isoformat() if self.day_end_at else None,
             'day_seconds_remaining': day_secs,
@@ -606,7 +615,7 @@ class Worker(models.Model):
 
 # ══════════════════════════════════════════════════════════════════
 class HireableWorker(models.Model):
-    ROLE_CHOICES = [('baker','Baker'),('cashier','Cashier'),('waiter','Waiter'),('manager','Manager')]
+    ROLE_CHOICES = [('baker','Baker'),('cashier','Cashier'),('waiter','Waiter'),('manager','Manager'),('barista','Barista')]
     # Issue 7: scope hire pool to game_state
     game_state         = models.ForeignKey(
         GameState, on_delete=models.CASCADE, related_name='hireable_workers', null=True, blank=True)
@@ -738,6 +747,14 @@ class CustomerOrder(models.Model):
     revenue        = models.DecimalField(max_digits=8, decimal_places=2, default=0)
     tip            = models.DecimalField(max_digits=6, decimal_places=2, default=0)
     satisfaction   = models.IntegerField(default=0)
+    lifecycle_state = models.CharField(max_length=20, default='queued', choices=[
+        ('entering','Entering'), ('queued','Queued'), ('ordering','Ordering'),
+        ('waiting_for_food','Waiting for Food'), ('seated','Seated'),
+        ('paying','Paying'), ('fulfilled','Fulfilled'),
+        ('expired','Expired'), ('canceled','Canceled'),
+    ])
+    queue_position  = models.IntegerField(null=True, blank=True)
+    table_slot      = models.IntegerField(null=True, blank=True)
 
     def __str__(self): return f"{self.customer_name}: {self.recipe.name}"
 
@@ -780,6 +797,9 @@ class CustomerOrder(models.Model):
             'expires_at':self.expires_at.isoformat(),
             'revenue':self.calculate_revenue(state),
             'is_todays': self.customer_type == 'todays',
+            'lifecycle_state':self.lifecycle_state,
+            'queue_position':self.queue_position,
+            'table_slot':self.table_slot,
         }
 
 

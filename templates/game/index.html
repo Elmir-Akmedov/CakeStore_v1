@@ -7,7 +7,6 @@
   <title>🎂 Cake Store Manager</title>
   <link rel="stylesheet" href="{% static 'css/style.css' %}">
 </head>
-<script src="{% static 'js/cafe-scene.js' %}"></script>
 <body>
 
 <!-- ── START ─────────────────────────────────────────────────────────────── -->
@@ -137,8 +136,8 @@
         <button class="tab-btn" data-tab="tab-orders"
                 onclick="switchTab('centre-tabs','tab-orders')">🛎 Orders</button>
       </div>
-      <div id="tab-cafe" class="tab-content active" style="padding:0;overflow:hidden;">
-        <canvas id="cafe-canvas" width="640" height="460" style="display:block;image-rendering:pixelated;width:100%;height:100%;"></canvas>
+      <div id="tab-cafe" class="tab-content active" style="padding:0;overflow:hidden;position:relative;">
+        <div id="phaser-container" style="width:100%;height:460px;display:block;"></div>
         <div id="popup-overlay" onclick="if(event.target===this)closePopup()" style="display:none;position:absolute;inset:0;background:rgba(8,4,2,.78);backdrop-filter:blur(3px);z-index:20;align-items:center;justify-content:center;">
           <div id="popup-inner"></div>
         </div>
@@ -294,6 +293,16 @@
 </div>
 
 <div id="toast-container"></div>
+<!-- Phaser 3 -->
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+<!-- Scenes — order matters -->
+<script src="{% static 'js/scenes/PreloadScene.js' %}"></script>
+<script src="{% static 'js/scenes/BootScene.js' %}"></script>
+<script src="{% static 'js/scenes/CafeScene.js' %}"></script>
+<script src="{% static 'js/scenes/OverlayScene.js' %}"></script>
+<script src="{% static 'js/scenes/PhaserBridge.js' %}"></script>
+<script src="{% static 'js/scenes/PhaserInit.js' %}"></script>
+<!-- Game logic (unchanged) -->
 <script src="{% static 'js/game.js' %}"></script>
 </body>
 </html>

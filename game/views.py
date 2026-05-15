@@ -225,3 +225,19 @@ def api_start_course(request):
     _inject_user(request)
     data = _body(request)
     return _run(engine.start_course, data.get('worker_id'))
+
+@login_required
+@csrf_exempt
+@require_http_methods(['POST'])
+def api_advance_lifecycle(request):
+    _inject_user(request)
+    data = _body(request)
+    return _run(engine.advance_customer_lifecycle, data.get('order_id'))
+
+@login_required
+@csrf_exempt
+@require_http_methods(['POST'])
+def api_cancel_customer(request):
+    _inject_user(request)
+    data = _body(request)
+    return _run(engine.cancel_customer, data.get('order_id'))
