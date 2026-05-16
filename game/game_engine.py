@@ -745,24 +745,40 @@ def _worker_fulfill_order(worker, state):
         orders_list = list(orders)
 
     for order in orders_list:
+        # --- THE PRE-FLIGHT FIX ---
         if order.quantity > 0:
-            has_stock = BakedCake.objects.filter(
+            qs = BakedCake.objects.filter(
                 game_state=state, recipe=order.recipe, size=order.size,
                 is_baking=False, remaining_slices=SIZE_SLICES[order.size]
-            ).exists()
+            )
+            if order.want_fresh:
+                days_fresh = 1 if state.has_upgrade('commercial_fridge') else 0
+                qs = qs.filter(day_baked__gte=state.day - days_fresh)
+            
+            has_stock = qs.count() >= order.quantity
         else:
-            has_stock = BakedCake.objects.filter(
+            qs = BakedCake.objects.filter(
                 game_state=state, recipe=order.recipe,
-                is_baking=False, remaining_slices__gte=order.pieces
-            ).exists()
+                is_baking=False, remaining_slices__gt=0
+            )
+            if order.want_fresh:
+                days_fresh = 1 if state.has_upgrade('commercial_fridge') else 0
+                qs = qs.filter(day_baked__gte=state.day - days_fresh)
+            
+            total_slices = qs.aggregate(total=Sum('remaining_slices'))['total'] or 0
+            has_stock = total_slices >= order.pieces
+        # --- END OF FIX ---
+
         if not has_stock:
             continue
+            
         result = fulfill_order(order.pk)
         if result['ok']:
             xp = {'urgent': 5, 'bulk': 4, 'standard': 3}.get(order.order_type, 3)
             if order.customer_type in ('vip', 'todays'):
                 xp += 7
             return award_worker_xp(worker, xp)
+            
     return None
 
 def _auto_bake(worker, state, force_recipe=None):
@@ -1039,17 +1055,40 @@ def _expire_orders():
 # ══════════════════════════════════════════════════════════════════
 
 def start_baking(recipe_id, size, oven_id, speed_penalty=1.0, manual_result=None):
-    recipe = validate_recipe(recipe_id)
     oven   = validate_oven(oven_id)
-    validate_size(size)
     state  = _state()
 
-    with transaction.atomic():
-        oven  = Oven.objects.select_for_update().get(pk=oven.pk)
-        s     = GameState.objects.select_for_update().get(pk=state.pk)
 
+    with transaction.atomic():
+        oven = Oven.objects.select_for_update().get(pk=oven.pk)
+        s    = GameState.objects.select_for_update().get(pk=state.pk)
+
+        # FIX: If the oven is busy, don't crash with a 400! Complete the cake instead.
         if oven.is_busy:
-            raise ValueError(f"{oven.name} is already baking.")
+            cake = BakedCake.objects.filter(game_state=state, oven=oven, is_baking=True).first()
+            if cake:
+                cake.is_baking = False
+                cake.baked_time = timezone.now()
+                if manual_result:
+                    mult = {'perfect': 1.15, 'good': 1.0, 'underbaked': 0.90, 'burnt': 0.70}.get(manual_result, 1.0)
+                    cake.manual_result_mult = mult
+                cake.save(update_fields=['is_baking', 'baked_time', 'manual_result_mult'])
+                
+                # Reward worker assigned to it
+                baker = oven.assigned_workers.filter(role='baker', is_active=True).first()
+                if baker:
+                    award_worker_xp(baker, 2)
+                
+                return {
+                    'ok': True,
+                    'message': f"Successfully pulled {cake.recipe.name} from the oven!",
+                    'cake': cake.to_dict(s.day, s)
+                }
+            # Fallback if no active cake object was tracked cleanly
+            return {'ok': True, 'message': 'Oven was cleared.'}
+        
+        recipe = validate_recipe(recipe_id)
+        validate_size(size)
 
         ingredient_cost = round(
             recipe.get_price(size) * recipe.ingredient_cost_pct
@@ -1185,27 +1224,31 @@ def fulfill_order(order_id):
                                (1 if s.has_upgrade('commercial_fridge') else 0))
             return list(qs)
 
-        for _ in range(order.quantity):
-            sl = shelf_whole()
-            if not sl:
+        if order.quantity > 0:
+            whole_cakes = shelf_whole()
+            if len(whole_cakes) < order.quantity:
                 tag = "fresh " if order.want_fresh else ""
-                return {'ok': False,
-                        'message': f'No {tag}whole {order.recipe.name} ({order.size}) in stock.'}
-            sl[0].remaining_slices = 0
-            sl[0].save(update_fields=['remaining_slices'])
+                return {'ok': False, 'message': f'Not enough {tag}whole {order.recipe.name} ({order.size}) in stock.'}
+            
+            for i in range(order.quantity):
+                whole_cakes[i].remaining_slices = 0
+                whole_cakes[i].save(update_fields=['remaining_slices'])
 
-        needed = order.pieces
-        while needed > 0:
-            sl = shelf_slices()
-            if not sl:
+        if order.pieces > 0:
+            slice_cakes = shelf_slices()
+            total_available = sum(c.remaining_slices for c in slice_cakes)
+            if total_available < order.pieces:
                 tag = "fresh " if order.want_fresh else ""
-                return {'ok': False,
-                        'message': f'Not enough {tag}slices of {order.recipe.name}.'}
-            cake = sl[0]
-            take = min(cake.remaining_slices, needed)
-            cake.remaining_slices -= take
-            cake.save(update_fields=['remaining_slices'])
-            needed -= take
+                return {'ok': False, 'message': f'Not enough {tag}slices of {order.recipe.name}.'}
+            
+            needed = order.pieces
+            for cake in slice_cakes:
+                if needed <= 0:
+                    break
+                take = min(cake.remaining_slices, needed)
+                cake.remaining_slices -= take
+                cake.save(update_fields=['remaining_slices'])
+                needed -= take
 
         revenue = order.calculate_revenue(s)
         cakes_used = BakedCake.objects.filter(

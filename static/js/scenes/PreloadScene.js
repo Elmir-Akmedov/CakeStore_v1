@@ -263,6 +263,12 @@ class PreloadScene extends Phaser.Scene {
       }
     });
     g.generateTexture(key, 80, 32); g.destroy();
+
+    const tex = this.textures.get(key);
+    tex.add(0, 0, 0,  0, 20, 32);
+    tex.add(1, 0, 20, 0, 20, 32);
+    tex.add(2, 0, 40, 0, 20, 32);
+    tex.add(3, 0, 60, 0, 20, 32);
   }
 
   // ── Customer sprite 18×30, 4-frame walk ──────────────────────────────────
@@ -282,6 +288,12 @@ class PreloadScene extends Phaser.Scene {
       g.fillRect(ox + 6, 5, 2, 2); g.fillRect(ox + 10, 5, 2, 2);
     });
     g.generateTexture(key, 72, 30); g.destroy();
+
+    const tex = this.textures.get(key);
+    tex.add(0, 0, 0,  0, 18, 30);
+    tex.add(1, 0, 18, 0, 18, 30);
+    tex.add(2, 0, 36, 0, 18, 30);
+    tex.add(3, 0, 54, 0, 18, 30);
   }
 
   // ── Order speech bubble 48×40 ────────────────────────────────────────────

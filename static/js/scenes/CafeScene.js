@@ -196,14 +196,20 @@ class CafeScene extends Phaser.Scene {
       if (!this.anims.exists(`${key}_walk`)) {
         this.anims.create({
           key: `${key}_walk`,
-          frames: this.anims.generateFrameNumbers(key, { start: 0, end: 3 }),
+          // FIX: Explicitly list the frames we sliced
+          frames: [
+            { key: key, frame: 0 },
+            { key: key, frame: 1 },
+            { key: key, frame: 2 },
+            { key: key, frame: 3 }
+          ],
           frameRate: 6, repeat: -1,
         });
       }
       if (!this.anims.exists(`${key}_idle`)) {
         this.anims.create({
           key: `${key}_idle`,
-          frames: this.anims.generateFrameNumbers(key, { start: 0, end: 0 }),
+          frames: [{ key: key, frame: 0 }], // FIX
           frameRate: 1, repeat: -1,
         });
       }
@@ -214,14 +220,20 @@ class CafeScene extends Phaser.Scene {
       if (!this.anims.exists(`${key}_walk`)) {
         this.anims.create({
           key: `${key}_walk`,
-          frames: this.anims.generateFrameNumbers(key, { start: 0, end: 3 }),
+          // FIX: Explicitly list the frames we sliced
+          frames: [
+            { key: key, frame: 0 },
+            { key: key, frame: 1 },
+            { key: key, frame: 2 },
+            { key: key, frame: 3 }
+          ],
           frameRate: 6, repeat: -1,
         });
       }
       if (!this.anims.exists(`${key}_idle`)) {
         this.anims.create({
           key: `${key}_idle`,
-          frames: this.anims.generateFrameNumbers(key, { start: 0, end: 0 }),
+          frames: [{ key: key, frame: 0 }], // FIX
           frameRate: 1, repeat: -1,
         });
       }

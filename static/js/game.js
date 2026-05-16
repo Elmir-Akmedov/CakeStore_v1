@@ -318,7 +318,7 @@ if (typeof PhaserBridge !== 'undefined') PhaserBridge.push(G);
   renderRecipeShop();   // Issue 2: called after G is populated
   renderReportsTab();
   renderNotificationBadge();
-  updateCafeScene(G);
+  // updateCafeScene(G);
   renderDrinksTab();
 }
 
