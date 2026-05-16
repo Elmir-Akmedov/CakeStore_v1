@@ -23,6 +23,9 @@ from .models import (
     CustomerTypeConfig,
     DailyEventConfig,
     DayReport,
+    DrinkRecipe,
+    BrewStation,
+    BrewingDrink,
     EventLog,
     GameBalanceConfig,
     GameState,
@@ -952,6 +955,60 @@ class EventLogAdmin(GameStateScopedAdmin):
     @admin.display(description="Message")
     def short_message(self, obj):
         return obj.message if len(obj.message) <= 90 else f"{obj.message[:87]}..."
+
+
+@admin.register(DrinkRecipe)
+class DrinkRecipeAdmin(admin.ModelAdmin):
+    list_display = ("name", "emoji", "brew_time_sec", "price", "ingredient_cost_pct", "is_unlocked", "is_starter", "unlock_day")
+    list_filter = ("is_unlocked", "is_starter", "unlock_day")
+    search_fields = ("name",)
+    actions = ("enable_drinks", "disable_drinks")
+
+    @admin.action(description="Unlock selected drinks")
+    def enable_drinks(self, request, queryset):
+        self.message_user(request, f"Unlocked {queryset.update(is_unlocked=True)} drink(s).")
+
+    @admin.action(description="Lock selected drinks")
+    def disable_drinks(self, request, queryset):
+        self.message_user(request, f"Locked {queryset.update(is_unlocked=False)} drink(s).")
+
+
+@admin.register(BrewStation)
+class BrewStationAdmin(GameStateScopedAdmin):
+    list_display = ("name", "game_state", "is_active", "is_busy", "purchased_on_day", "cost", "brews_count")
+    list_filter = ("is_active", "purchased_on_day", "game_state")
+    search_fields = ("name", "game_state__store_name", "game_state__user__username")
+    actions = ("activate_stations", "deactivate_stations")
+
+    @admin.action(description="Activate selected brew stations")
+    def activate_stations(self, request, queryset):
+        self.message_user(request, f"Activated {queryset.update(is_active=True)} brew station(s).")
+
+    @admin.action(description="Deactivate selected brew stations")
+    def deactivate_stations(self, request, queryset):
+        self.message_user(request, f"Deactivated {queryset.update(is_active=False)} brew station(s).")
+
+
+@admin.register(BrewingDrink)
+class BrewingDrinkAdmin(GameStateScopedAdmin):
+    list_display = ("recipe", "game_state", "station", "is_brewing", "seconds_left", "day_brewed", "ingredient_cost")
+    list_filter = ("is_brewing", "day_brewed", "game_state")
+    search_fields = ("recipe__name", "station__name", "game_state__store_name", "game_state__user__username")
+    actions = ("finish_brewing", "clear_brewing")
+
+    @admin.display(description="Seconds Left")
+    def seconds_left(self, obj):
+        return round(obj.seconds_remaining, 1) if obj.is_brewing else 0
+
+    @admin.action(description="Finish selected brewing drinks")
+    def finish_brewing(self, request, queryset):
+        self.message_user(request, f"Finished {queryset.update(is_brewing=False)} brewing drink(s).")
+
+    @admin.action(description="Clear selected brewing drinks")
+    def clear_brewing(self, request, queryset):
+        count = queryset.count()
+        queryset.delete()
+        self.message_user(request, f"Cleared {count} brewing drink(s).")
 
 
 @admin.register(AdminNote)

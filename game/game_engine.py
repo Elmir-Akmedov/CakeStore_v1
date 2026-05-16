@@ -27,6 +27,7 @@ from .models import (
     OvenTypeConfig, KitchenUpgradeConfig, DailyEventConfig,
     WorkerSkillConfig, CustomerTypeConfig, CourseConfig,
     SalaryRangeConfig, GameBalanceConfig,
+    BrewStation, BrewingDrink, DrinkRecipe,
     CUSTOMER_NAMES, SIZE_SLICES,
     SKILL_CATALOGUE, SKILL_RARITY_COLORS, SKILL_RARITY_LABELS,
     COURSE_CONFIG, HIRE_POOL_NAMES,
@@ -562,6 +563,7 @@ def tick():
             auto_ended = True
             return {
                 'newly_done':   [],
+                'brewed_done':   [],
                 'new_order':    None,
                 'expired_count': 0,
                 'new_unlocks':  [],
@@ -575,6 +577,7 @@ def tick():
             pass
 
     newly_done   = _check_baking()
+    brewed_done  = _check_brewing()
     new_unlocks  = check_recipe_unlocks()
     courses_done = check_courses()
     level_ups    = []
@@ -589,6 +592,7 @@ def tick():
 
     return {
         'newly_done':    newly_done,
+        'brewed_done':   brewed_done,
         'new_order':     new_order,
         'expired_count': expired_count,
         'new_unlocks':   new_unlocks,
@@ -627,6 +631,26 @@ def _check_baking():
 
     return [{'cake_id': c.pk, 'name': c.recipe.name,
              'size': c.size, 'emoji': c.recipe.emoji} for c in done]
+
+
+def _check_brewing():
+    state = _state()
+    now = timezone.now()
+    done = list(
+        BrewingDrink.objects
+        .filter(game_state=state, is_brewing=True, brew_finish_at__lte=now)
+        .select_related('recipe', 'station')
+    )
+    if not done:
+        return []
+
+    with transaction.atomic():
+        for brew in done:
+            brew.is_brewing = False
+            brew.save(update_fields=['is_brewing'])
+            log_event(brew.recipe.emoji, f'{brew.recipe.name} is ready!', log_type='success')
+
+    return [brew.to_dict() for brew in done]
 
 
 def _worker_tick():
@@ -669,11 +693,15 @@ def _worker_tick():
                 _waiter_bump_urgent()
 
         elif worker.role == 'barista':
-            # Phase 6: barista handles drink-like items (future: brew station)
-            # For now, barista auto-fulfills orders like a cashier
-            lu = _worker_fulfill_order(worker, state)
-            if lu:
-                level_ups.append(lu)
+            station = BrewStation.objects.filter(game_state=state, is_active=True).first()
+            if station and not station.is_busy:
+                drinks = list(DrinkRecipe.objects.filter(is_unlocked=True))
+                if drinks:
+                    try:
+                        start_brewing(random.choice(drinks).pk)
+                        award_worker_xp(worker, 1)
+                    except ValueError:
+                        pass
 
     return level_ups
 
@@ -817,11 +845,20 @@ def _maybe_generate_order():
 
     # No room in queue
     if qs['queue'] >= state.max_queue_size:
+        with transaction.atomic():
+            s = GameState.objects.select_for_update().get(pk=state.pk)
+            s.next_order_at = timezone.now() + timedelta(seconds=8)
+            s.save(update_fields=['next_order_at'])
         return None
 
     # Phase 5: balance-driven frequency
-    base_interval = max(4, 20 - (state.reputation // 5))
-    interval      = max(3, int(base_interval / state.order_frequency_mult))
+    if state.day <= 5:
+        base_interval = random.randint(35, 70)
+    elif state.day <= 20:
+        base_interval = random.randint(25, 50)
+    else:
+        base_interval = random.randint(15, 35)
+    interval = max(10, int(base_interval / max(0.5, state.order_frequency_mult)))
 
     # Phase 4: cap active customers by table + cashier count
     active_orders = CustomerOrder.objects.filter(game_state=state, status='pending').count()
@@ -1062,6 +1099,47 @@ def start_baking(recipe_id, size, oven_id, speed_penalty=1.0, manual_result=None
 # ══════════════════════════════════════════════════════════════════
 #  FULFILL ORDER
 # ══════════════════════════════════════════════════════════════════
+
+def start_brewing(drink_id):
+    state = _state()
+    try:
+        drink = DrinkRecipe.objects.get(pk=int(drink_id), is_unlocked=True)
+    except (DrinkRecipe.DoesNotExist, TypeError, ValueError):
+        raise ValueError("Drink not found or locked.")
+
+    station = BrewStation.objects.filter(game_state=state, is_active=True).first()
+    if not station:
+        raise ValueError("No brew station. Buy one from Upgrades.")
+    if station.is_busy:
+        raise ValueError(f"{station.name} is already brewing.")
+
+    cost = round(float(drink.price) * drink.ingredient_cost_pct, 2)
+    with transaction.atomic():
+        s = GameState.objects.select_for_update().get(pk=state.pk)
+        if float(s.money) < cost:
+            raise ValueError(f"Need ${cost:.2f}, have ${float(s.money):.2f}.")
+        station = BrewStation.objects.select_for_update().get(pk=station.pk)
+        if station.is_busy:
+            raise ValueError(f"{station.name} is already brewing.")
+        s.money -= D(cost)
+        s.save(update_fields=['money'])
+        station.brews_count += 1
+        station.save(update_fields=['brews_count'])
+        now = timezone.now()
+        brew = BrewingDrink.objects.create(
+            game_state=state,
+            recipe=drink,
+            station=station,
+            is_brewing=True,
+            brew_finish_at=now + timedelta(seconds=drink.brew_time_sec),
+            brew_duration_sec=drink.brew_time_sec,
+            day_brewed=s.day,
+            ingredient_cost=D(cost),
+        )
+
+    log_event(drink.emoji, f'Brewing {drink.name} - {drink.brew_time_sec}s', log_type='info')
+    return {'ok': True, 'message': f'Brewing {drink.name}!', 'brew': brew.to_dict()}
+
 
 def fulfill_order(order_id):
     try:
@@ -1472,6 +1550,20 @@ def buy_upgrade(uid):
             s.cashier_stands = min(s.cashier_stands + 1, 3)
             s.max_queue_size = s.cashier_stands * 3
             s.save(update_fields=['owned_upgrades', 'money', 'cashier_stands', 'max_queue_size'])
+        elif uid == 'brew_station':
+            s.save(update_fields=['owned_upgrades', 'money'])
+            station, _created = BrewStation.objects.get_or_create(
+                game_state=state,
+                name='Brew Station #1',
+                defaults={
+                    'purchased_on_day': s.day,
+                    'cost': D(cfg['cost']),
+                    'is_active': True,
+                },
+            )
+            if not station.is_active:
+                station.is_active = True
+                station.save(update_fields=['is_active'])
         else:
             s.save(update_fields=['owned_upgrades', 'money'])
     log_event(cfg['emoji'], f"Purchased: {cfg['name']}!", log_type='success')
@@ -1727,6 +1819,9 @@ def start_game(store_name, confirmed=False):
         s.critic_fresh_served    = 0
         s.todays_guest_id        = None
         s.course_discount_active = False
+        s.tables_count           = 2
+        s.cashier_stands         = 1
+        s.max_queue_size         = 3
         s.save()
         s.reset_unlocked_recipes()
 
@@ -1761,7 +1856,7 @@ def get_full_state():
                  CustomerOrder.objects
                                .filter(game_state=state, status='pending')
                                .select_related('recipe')
-                               .order_by('expires_at')]
+                               .order_by('queue_position', 'placed_at', 'expires_at')]
     recipes   = [r.to_dict(state) for r in CakeRecipe.objects.all().order_by('pk')]
     reports   = [r.to_dict() for r in DayReport.objects.filter(game_state=state)[:7]]
     hire_pool = [hw.to_dict() for hw in get_hire_pool(current_day)]
@@ -1778,6 +1873,15 @@ def get_full_state():
         cost = round(cfg['cost'] * (0.70 if state.course_discount_active else 1.0))
         course_costs[f"{fr}_to_{to}"] = {'cost': cost, 'days': cfg['days']}
 
+    drink_recipes = [d.to_dict() for d in DrinkRecipe.objects.all().order_by('pk')]
+    brew_stations = [b.to_dict() for b in BrewStation.objects.filter(game_state=state, is_active=True)]
+    brewing_drinks = [
+        b.to_dict() for b in
+        BrewingDrink.objects
+        .filter(game_state=state, is_brewing=True)
+        .select_related('recipe', 'station')
+    ]
+
     return {
         'state':        state.to_dict(),
         'ovens':        ovens,
@@ -1791,6 +1895,9 @@ def get_full_state():
         'event_log':    event_log,
         'upgrades':     upgrades,
         'course_costs': course_costs,
+        'drink_recipes': drink_recipes,
+        'brew_stations': brew_stations,
+        'brewing_drinks': brewing_drinks,
         'shop': {
             'ovens': [{'tier':k,**v} for k,v in get_oven_catalog().items()],
         },
