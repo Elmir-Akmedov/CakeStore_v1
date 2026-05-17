@@ -1,215 +1,197 @@
 'use strict';
 /**
- * CafeScene — authoritative visual restaurant.
- * Server is source of truth. Client only animates toward server state.
- * Every visible entity maps to a real server object.
+ * CafeScene — Phase 2 full replacement.
+ *
+ * KEY FIXES vs old version:
+ *  - Animations use explicit frame objects {key,frame} not generateFrameNumbers,
+ *    because our textures are hand-drawn and frames registered manually.
+ *  - Customers only spawn when server sends a real order. Zero ghost sprites.
+ *  - Workers walk to their home position then idle-bob; they do NOT wander.
+ *  - Upgrade cinematic pauses all input, zooms camera, plays sparkles, resumes.
+ *  - Steam only emits on actually-baking ovens.
+ *  - All tween targets are destroyed when server entity disappears.
  */
 class CafeScene extends Phaser.Scene {
   constructor() { super({ key: 'CafeScene' }); }
 
-  // ── Layout constants ──────────────────────────────────────────────────────
-  static get LAYOUT() {
+  // ── Layout ────────────────────────────────────────────────────────────────
+  static get L() {
     return {
-      FLOOR_Y:       100,
-      WALL_H:        100,
-      QUEUE_X:       160,
-      QUEUE_START_Y: 340,
-      QUEUE_SPACING: 38,
-      CASHIER_X:     160,
-      CASHIER_Y:     260,
-      KITCHEN_X:     520,
-      KITCHEN_Y:     110,
-      BREW_X:        520,
-      BREW_Y:        300,
-      TABLE_SLOTS: [
-        { x: 260, y: 220 }, { x: 380, y: 220 },
-        { x: 260, y: 320 }, { x: 380, y: 320 },
-        { x: 260, y: 420 }, { x: 380, y: 420 },
+      W: 760, H: 460,
+      FLOOR_Y: 100,
+      // Cashier stand
+      CASHIER_X: 140, CASHIER_Y: 250,
+      // Queue line (customers waiting)
+      QUEUE_X: 140, QUEUE_START_Y: 340, QUEUE_STEP: 40,
+      // Tables (front of house)
+      TABLES: [
+        { x: 280, y: 220 }, { x: 400, y: 220 },
+        { x: 280, y: 330 }, { x: 400, y: 330 },
+        { x: 280, y: 420 }, { x: 400, y: 420 },
       ],
-      OVEN_SLOTS: [
-        { x: 530, y: 120 }, { x: 610, y: 120 }, { x: 690, y: 120 },
+      // Kitchen ovens
+      OVENS: [
+        { x: 545, y: 118 }, { x: 625, y: 118 }, { x: 705, y: 118 },
       ],
-      PLANT_POSITIONS: [{ x: 20, y: 108 }, { x: 740, y: 108 }],
-      WINDOW_POSITIONS: [{ x: 50, y: 20 }, { x: 160, y: 20 }, { x: 360, y: 20 }, { x: 470, y: 20 }],
+      // Brew station
+      BREW: { x: 545, y: 290 },
+      // Plants, windows
+      PLANTS: [{ x: 18, y: 104 }, { x: 726, y: 104 }],
+      WINDOWS: [{ x: 50, y: 16 }, { x: 160, y: 16 }, { x: 360, y: 16 }, { x: 470, y: 16 }],
     };
   }
 
   // ── Init ──────────────────────────────────────────────────────────────────
   init() {
-    this.serverState    = null;
-    this.customerSprites = {};   // id → CustomerSprite
-    this.workerSprites   = {};   // id → WorkerSprite
-    this.ovenSprites     = {};   // id → OvenSprite
-    this.tableSlots      = [];   // tracks occupancy
-    this.queueSlots      = [];   // tracks queue positions
-    this.steamEmitters   = [];
-    this.upgradeInProgress = false;
+    this._customers = {};    // orderId → { sprite, bubble, icon, impatience, key, qIdx }
+    this._workers   = {};    // workerId → { sprite, label, moraleGfx, data }
+    this._ovens     = [];    // array mirroring L.OVENS slots
+    this._tableObjs = [];
+    this._upgradeRunning = false;
+    this._lastState = null;
   }
 
   // ── Create ────────────────────────────────────────────────────────────────
   create() {
-    const W = this.scale.width;
-    const H = this.scale.height;
-    const L = CafeScene.LAYOUT;
+    const { W, H, L: _ } = { W: CafeScene.L.W, H: CafeScene.L.H, L: CafeScene.L };
+    const L = CafeScene.L;
 
-    // Groups — depth ordered
-    this.floorGroup    = this.add.group();
-    this.wallGroup     = this.add.group();
-    this.furnitureGroup= this.add.group();
-    this.entityGroup   = this.add.group();
-    this.fxGroup       = this.add.group();
-    this.uiGroup       = this.add.group();
-
-    this._buildRoom(W, H, L);
-    this._buildFurniture(L);
+    this._buildRoom();
+    this._buildFurniture();
     this._buildAnimations();
     this._buildParticles();
-    this._setupInput();
+    this._buildInput();
 
-    // Listen for events from OverlayScene / game.js bridge
-    this.game.events.on('server-state', this._onServerState, this);
-    this.game.events.on('upgrade-bought', this._onUpgradeBought, this);
-    this.game.events.on('oven-bought', this._onOvenBought, this);
+    this.game.events.on('server-state',   this._onState,   this);
+    this.game.events.on('upgrade-bought', this._onUpgrade, this);
+    this.game.events.on('oven-bought',    this._onOvenBought, this);
 
-    // Anims loop
-    this.time.addEvent({ delay: 500, callback: this._tickAnimations, callbackScope: this, loop: true });
+    // Idle-bob tick every 600 ms
+    this.time.addEvent({
+      delay: 600, loop: true,
+      callback: this._idleBob, callbackScope: this,
+    });
   }
 
-  // ── Room background ───────────────────────────────────────────────────────
-  _buildRoom(W, H, L) {
-    // Sky/exterior gradient behind windows
-    const sky = this.add.graphics();
-    sky.fillGradientStyle(0x87ceeb, 0x87ceeb, 0xddeeff, 0xddeeff, 1);
-    sky.fillRect(0, 0, W, L.WALL_H);
-    sky.setDepth(0);
+  // ── Room ──────────────────────────────────────────────────────────────────
+  _buildRoom() {
+    const L = CafeScene.L;
+    const W = L.W, H = L.H;
 
-    // Wall panels
-    for (let x = 0; x < W; x += 32) {
+    // Sky strip
+    const sky = this.add.graphics().setDepth(0);
+    sky.fillGradientStyle(0x87ceeb, 0x87ceeb, 0xddeeff, 0xddeeff, 1);
+    sky.fillRect(0, 0, W, L.FLOOR_Y);
+
+    // Walls
+    for (let x = 0; x < W; x += 32)
       this.add.image(x, 0, 'wall_panel').setOrigin(0, 0).setDepth(1);
-    }
 
     // Windows
-    L.WINDOW_POSITIONS.forEach(pos => {
-      this.add.image(pos.x, pos.y, 'window').setOrigin(0, 0).setDepth(2);
-    });
+    L.WINDOWS.forEach(p => this.add.image(p.x, p.y, 'window').setOrigin(0, 0).setDepth(2));
 
-    // Store sign
-    const sign = this.add.image(W / 2, 14, 'sign').setOrigin(0.5, 0).setDepth(3);
-    this.signText = this.add.text(W / 2, 19, '🎂 CAFÉ', {
+    // Store sign (text set later from server state)
+    this.add.image(W / 2, 12, 'sign').setOrigin(0.5, 0).setDepth(3);
+    this._signText = this.add.text(W / 2, 17, '🎂 CAFÉ', {
       fontSize: '11px', fontFamily: 'Segoe UI', color: '#f0c040', fontStyle: 'bold',
     }).setOrigin(0.5, 0).setDepth(4);
 
     // Floor tiles
-    for (let y = L.FLOOR_Y; y < H; y += 32) {
+    for (let y = L.FLOOR_Y; y < H; y += 32)
       for (let x = 0; x < W; x += 32) {
-        const tile = this.add.image(x, y, 'floor_tile').setOrigin(0, 0).setDepth(1);
-        // subtle checkerboard tint variation
-        if (((x / 32) + (y / 32)) % 2 === 0) tile.setTint(0xddaa66);
+        const t = this.add.image(x, y, 'floor_tile').setOrigin(0, 0).setDepth(1);
+        if (((x / 32) + (y / 32)) % 2 === 0) t.setTint(0xddaa66);
       }
-    }
 
-    // Kitchen divider wall
-    const divider = this.add.graphics().setDepth(5);
-    divider.fillStyle(0x3d2512); divider.fillRect(510, L.FLOOR_Y, 10, H - L.FLOOR_Y);
-    divider.fillStyle(0xc07820); divider.fillRect(510, L.FLOOR_Y, 10, 5);
-
-    // Kitchen floor (darker)
-    const kitchenFloor = this.add.graphics().setDepth(1);
-    kitchenFloor.fillStyle(0x9a7a50, 0.5);
-    kitchenFloor.fillRect(520, L.FLOOR_Y, 280, H - L.FLOOR_Y);
-
+    // Kitchen divider
+    const div = this.add.graphics().setDepth(5);
+    div.fillStyle(0x3d2512); div.fillRect(520, L.FLOOR_Y, 8, H - L.FLOOR_Y);
+    div.fillStyle(0xc07820); div.fillRect(520, L.FLOOR_Y, 8, 4);
     // Kitchen label
-    this.add.text(630, L.FLOOR_Y + 8, '— KITCHEN —', {
-      fontSize: '9px', fontFamily: 'Segoe UI', color: '#f0c040', fontStyle: 'bold',
+    this.add.text(630, L.FLOOR_Y + 6, '— KITCHEN —', {
+      fontSize: '8px', fontFamily: 'Segoe UI', color: '#f0c040', fontStyle: 'bold',
     }).setOrigin(0.5, 0).setDepth(6);
 
-    // Plants
-    L.PLANT_POSITIONS.forEach(pos => {
-      this.add.image(pos.x, pos.y, 'plant').setOrigin(0, 0).setDepth(4);
-    });
+    // Kitchen floor tint
+    const kFloor = this.add.graphics().setDepth(1);
+    kFloor.fillStyle(0x9a7a50, 0.4);
+    kFloor.fillRect(528, L.FLOOR_Y, W - 528, H - L.FLOOR_Y);
 
-    // Queue rope/line indicator
-    this.queueLine = this.add.graphics().setDepth(3);
-    this._drawQueueLine(L);
+    // Plants
+    L.PLANTS.forEach(p => this.add.image(p.x, p.y, 'plant').setOrigin(0, 0).setDepth(4));
+
+    // Queue rope
+    this._queueGfx = this.add.graphics().setDepth(3);
+    this._drawQueueRope();
   }
 
-  _drawQueueLine(L) {
-    this.queueLine.clear();
-    this.queueLine.lineStyle(2, 0xc07820, 0.5);
-    this.queueLine.beginPath();
-    this.queueLine.moveTo(L.CASHIER_X, L.CASHIER_Y + 40);
-    this.queueLine.lineTo(L.QUEUE_X, L.QUEUE_START_Y + L.QUEUE_SPACING * 5);
-    this.queueLine.strokePath();
+  _drawQueueRope() {
+    const L = CafeScene.L;
+    this._queueGfx.clear();
+    this._queueGfx.lineStyle(2, 0xc07820, 0.4);
+    this._queueGfx.beginPath();
+    this._queueGfx.moveTo(L.CASHIER_X, L.CASHIER_Y + 50);
+    this._queueGfx.lineTo(L.QUEUE_X, L.QUEUE_START_Y + L.QUEUE_STEP * 5);
+    this._queueGfx.strokePath();
   }
 
   // ── Furniture ─────────────────────────────────────────────────────────────
-  _buildFurniture(L) {
+  _buildFurniture() {
+    const L = CafeScene.L;
+
     // Cashier stand
-    this.cashierStandSprite = this.add.image(L.CASHIER_X, L.CASHIER_Y, 'cashier_stand')
-      .setOrigin(0.5, 0).setDepth(10);
-
+    this.add.image(L.CASHIER_X, L.CASHIER_Y, 'cashier_stand').setOrigin(0.5, 0).setDepth(10);
     // Counter
-    this.counter = this.add.image(160, 380, 'counter').setOrigin(0.5, 0).setDepth(10);
-
-    // Display case (hidden until upgrade bought)
-    this.displayCase = this.add.image(160, 290, 'display_case')
+    this.add.image(L.CASHIER_X, L.CASHIER_Y + 120, 'counter').setOrigin(0.5, 0).setDepth(10);
+    // Display case (hidden until bought)
+    this._displayCase = this.add.image(L.CASHIER_X, L.CASHIER_Y + 70, 'display_case')
       .setOrigin(0.5, 0).setDepth(10).setVisible(false).setAlpha(0);
 
-    // Tables — start with 2 visible
-    this.tableObjects = [];
-    L.TABLE_SLOTS.forEach((slot, i) => {
-      const visible = i < 2;
-      const tbl = this.add.image(slot.x, slot.y, 'table')
-        .setOrigin(0.5, 0.5).setDepth(8).setVisible(visible).setAlpha(visible ? 1 : 0);
-      // chairs around table
-      const chairN = this.add.image(slot.x, slot.y - 28, 'chair')
-        .setOrigin(0.5, 0.5).setDepth(7).setVisible(visible).setAlpha(visible ? 1 : 0);
-      const chairS = this.add.image(slot.x, slot.y + 28, 'chair')
-        .setOrigin(0.5, 0.5).setDepth(9).setVisible(visible).setAlpha(visible ? 1 : 0);
-      this.tableObjects.push({ sprite: tbl, chairN, chairS, slot, occupied: false, visible });
+    // Tables — start 2 visible
+    this._tableObjs = L.TABLES.map((slot, i) => {
+      const vis = i < 2;
+      const tbl  = this.add.image(slot.x, slot.y, 'table').setOrigin(0.5, 0.5).setDepth(8).setVisible(vis).setAlpha(vis ? 1 : 0);
+      const cn   = this.add.image(slot.x, slot.y - 30, 'chair').setOrigin(0.5, 0.5).setDepth(7).setVisible(vis).setAlpha(vis ? 1 : 0);
+      const cs_  = this.add.image(slot.x, slot.y + 30, 'chair').setOrigin(0.5, 0.5).setDepth(9).setVisible(vis).setAlpha(vis ? 1 : 0);
+      const full = this.add.image(slot.x + 28, slot.y - 28, 'table_full').setDepth(20).setVisible(false);
+      return { tbl, cn, cs_, full, slot, visible: vis };
     });
 
-    // Oven slots (start with 1 basic oven shown)
-    this.ovenObjects = [];
-    L.OVEN_SLOTS.forEach((slot, i) => {
-      const ov = this.add.image(slot.x, slot.y, 'oven_idle')
-        .setOrigin(0.5, 0).setDepth(10).setVisible(i === 0).setAlpha(i === 0 ? 1 : 0);
-      this.ovenObjects.push({ sprite: ov, slot, serverId: null, tier: 'basic', baking: false });
+    // Ovens — slot 0 visible by default (starter oven)
+    this._ovenObjs = L.OVENS.map((slot, i) => {
+      const spr = this.add.image(slot.x, slot.y, 'oven_idle')
+        .setOrigin(0.5, 0).setDepth(10)
+        .setVisible(i === 0).setAlpha(i === 0 ? 1 : 0)
+        .setInteractive();
+      spr._slotIdx = i;
+      return { spr, slot, serverId: null, tier: 'basic', baking: false };
     });
 
-    // Brew station (hidden until bought)
-    this.brewStationSprite = this.add.image(L.BREW_X + 36, L.BREW_Y, 'brew_station')
+    // Brew station hidden until bought
+    this._brewSpr = this.add.image(L.BREW.x, L.BREW.y, 'brew_station_idle')
       .setOrigin(0.5, 0).setDepth(10).setVisible(false).setAlpha(0);
-
-    // Table-full indicators (one per table slot, hidden by default)
-    this.tableFullIcons = L.TABLE_SLOTS.map(slot =>
-      this.add.image(slot.x + 26, slot.y - 26, 'table_full')
-        .setDepth(20).setVisible(false).setScale(0.8)
-    );
   }
 
   // ── Animations ────────────────────────────────────────────────────────────
   _buildAnimations() {
+    // Use explicit frame objects because frames were manually registered in PreloadScene
     const roles = ['baker', 'cashier', 'waiter', 'manager', 'barista'];
     roles.forEach(role => {
       const key = `worker_${role}`;
       if (!this.anims.exists(`${key}_walk`)) {
         this.anims.create({
           key: `${key}_walk`,
-          // FIX: Explicitly list the frames we sliced
           frames: [
-            { key: key, frame: 0 },
-            { key: key, frame: 1 },
-            { key: key, frame: 2 },
-            { key: key, frame: 3 }
+            { key, frame: 0 }, { key, frame: 1 },
+            { key, frame: 2 }, { key, frame: 3 },
           ],
-          frameRate: 6, repeat: -1,
+          frameRate: 7, repeat: -1,
         });
       }
       if (!this.anims.exists(`${key}_idle`)) {
         this.anims.create({
           key: `${key}_idle`,
-          frames: [{ key: key, frame: 0 }], // FIX
+          frames: [{ key, frame: 0 }],
           frameRate: 1, repeat: -1,
         });
       }
@@ -220,479 +202,458 @@ class CafeScene extends Phaser.Scene {
       if (!this.anims.exists(`${key}_walk`)) {
         this.anims.create({
           key: `${key}_walk`,
-          // FIX: Explicitly list the frames we sliced
           frames: [
-            { key: key, frame: 0 },
-            { key: key, frame: 1 },
-            { key: key, frame: 2 },
-            { key: key, frame: 3 }
+            { key, frame: 0 }, { key, frame: 1 },
+            { key, frame: 2 }, { key, frame: 3 },
           ],
-          frameRate: 6, repeat: -1,
+          frameRate: 7, repeat: -1,
         });
       }
       if (!this.anims.exists(`${key}_idle`)) {
         this.anims.create({
           key: `${key}_idle`,
-          frames: [{ key: key, frame: 0 }], // FIX
+          frames: [{ key, frame: 0 }],
           frameRate: 1, repeat: -1,
         });
       }
     }
   }
 
-  // ── Particles ────────────────────────────────────────────────────────────
+  // ── Particles ─────────────────────────────────────────────────────────────
   _buildParticles() {
-    // Steam particle emitter (for ovens)
-    this.steamParticles = this.add.particles(0, 0, 'steam', {
-      x: { min: -5, max: 5 },
-      y: { min: -5, max: 5 },
-      speedY: { min: -30, max: -60 },
-      speedX: { min: -5, max: 5 },
-      alpha: { start: 0.6, end: 0 },
-      scale: { start: 0.8, end: 0.2 },
-      lifespan: { min: 800, max: 1400 },
-      frequency: 400,
+    this._steamEmitter = this.add.particles(0, 0, 'steam', {
+      x: { min: -6, max: 6 },
+      speedY: { min: -35, max: -65 },
+      speedX: { min: -4, max: 4 },
+      alpha: { start: 0.55, end: 0 },
+      scale: { start: 0.9, end: 0.2 },
+      lifespan: { min: 900, max: 1600 },
+      frequency: 350,
       quantity: 1,
-    }).setDepth(25).stop();
+    }).setDepth(26).stop();
   }
 
-  // ── Input ────────────────────────────────────────────────────────────────
-  _setupInput() {
-    // Clicking an oven triggers bake modal via event
-    this.input.on('gameobjectdown', (pointer, obj) => {
-      if (obj.ovenIndex !== undefined) {
-        const ov = this.ovenObjects[obj.ovenIndex];
-        if (ov && ov.serverId !== null) {
+  // ── Input ──────────────────────────────────────────────────────────────────
+  _buildInput() {
+    this.input.on('gameobjectdown', (_ptr, obj) => {
+      if (obj._slotIdx !== undefined) {
+        const ov = this._ovenObjs[obj._slotIdx];
+        if (ov?.serverId != null)
           this.game.events.emit('oven-clicked', ov.serverId);
-        }
-      }
-      if (obj.tableIndex !== undefined) {
-        const slot = this.tableObjects[obj.tableIndex];
-        if (slot?.occupied) {
-          this.game.events.emit('table-clicked', obj.tableIndex);
-        }
       }
     });
   }
 
-  // ── Server state handler ─────────────────────────────────────────────────
-  _onServerState(G) {
-    if (this.upgradeInProgress) return;
-    this.serverState = G;
-    const state = G.state || {};
+  // ── Server state ──────────────────────────────────────────────────────────
+  _onState(G) {
+    if (this._upgradeRunning) return;
+    this._lastState = G;
+    const st = G.state || {};
 
-    // Update sign text
-    if (this.signText) this.signText.setText(`🎂 ${state.store_name || 'CAFÉ'}`);
+    // Sign
+    if (this._signText) this._signText.setText(`🎂 ${st.store_name || 'CAFÉ'}`);
 
-    // Sync ovens
-    this._syncOvens(G.ovens || []);
-
-    // Sync workers
-    this._syncWorkers(G.workers || []);
-
-    // Sync customers (orders = visible customers)
-    this._syncCustomers(G.orders || []);
-
-    // Brew station visibility
-    if (state.owned_upgrades?.includes('brew_station') && !this.brewStationSprite.visible) {
+    // Brew station
+    if (st.owned_upgrades?.includes('brew_station') && !this._brewSpr.visible)
       this._revealBrewStation();
-    }
 
     // Display case
-    if (state.owned_upgrades?.includes('display_case') && !this.displayCase.visible) {
-      this.displayCase.setVisible(true);
-      this.tweens.add({ targets: this.displayCase, alpha: 1, duration: 600, ease: 'Power2' });
+    if (st.owned_upgrades?.includes('display_case') && !this._displayCase.visible) {
+      this._displayCase.setVisible(true);
+      this.tweens.add({ targets: this._displayCase, alpha: 1, duration: 500, ease: 'Power2' });
     }
 
-    // Tables from upgrades
-    this._syncTables(state);
-
-    // Steam emitters for baking ovens
+    // Sync everything
+    this._syncOvens(G.ovens || []);
+    this._syncTables(st);
+    this._syncWorkers(G.workers || []);
+    this._syncCustomers(G.orders || []);
     this._syncSteam(G.ovens || []);
-
-    // Table-full icons
-    this._updateTableFullIcons(G.orders || []);
+    this._syncTableFull(G.orders || [], st);
   }
 
-  // ── Oven sync ─────────────────────────────────────────────────────────────
+  // ── Ovens ──────────────────────────────────────────────────────────────────
   _syncOvens(ovens) {
-    const L = CafeScene.LAYOUT;
     ovens.forEach((ov, i) => {
-      if (i >= this.ovenObjects.length) return;
-      const obj = this.ovenObjects[i];
+      if (i >= this._ovenObjs.length) return;
+      const obj = this._ovenObjs[i];
       obj.serverId = ov.id;
       obj.tier     = ov.tier;
       obj.baking   = ov.is_busy;
 
-      const textureKey = ov.is_busy
+      const texKey = ov.is_busy
         ? (ov.tier === 'industrial' ? 'oven_ind_baking' : ov.tier === 'pro' ? 'oven_pro_baking' : 'oven_baking')
         : (ov.tier === 'industrial' ? 'oven_ind_idle'   : ov.tier === 'pro' ? 'oven_pro_idle'   : 'oven_idle');
 
-      if (!obj.sprite.visible) {
-        obj.sprite.setVisible(true);
-        this.tweens.add({ targets: obj.sprite, alpha: 1, duration: 400, ease: 'Power2' });
+      if (!obj.spr.visible) {
+        obj.spr.setVisible(true);
+        this.tweens.add({ targets: obj.spr, alpha: 1, duration: 400, ease: 'Back.easeOut' });
       }
-      obj.sprite.setTexture(textureKey).setInteractive();
-      obj.sprite.ovenIndex = i;
+      obj.spr.setTexture(texKey);
     });
   }
 
-  // ── Worker sync ───────────────────────────────────────────────────────────
+  // ── Tables ─────────────────────────────────────────────────────────────────
+  _syncTables(state) {
+    const upgrades = state.owned_upgrades || [];
+    // base 2 + extra_table upgrades
+    const count = state.tables_count ?? (2 + upgrades.filter(u => u === 'extra_table').length);
+    const visible = Math.min(count, this._tableObjs.length);
+    this._tableObjs.forEach((t, i) => {
+      if (i < visible && !t.visible) {
+        t.visible = true;
+        t.tbl.setVisible(true); t.cn.setVisible(true); t.cs_.setVisible(true);
+        this.tweens.add({
+          targets: [t.tbl, t.cn, t.cs_],
+          alpha: 1, y: '-=6', duration: 500, ease: 'Back.easeOut',
+          onComplete: () => { t.tbl.y += 6; t.cn.y += 6; t.cs_.y += 6; },
+        });
+      }
+    });
+  }
+
+  _syncTableFull(orders, state) {
+    const tables = state.tables_count ?? 2;
+    const seated = orders.filter(o =>
+      o.lifecycle_state === 'waiting_for_food' || o.lifecycle_state === 'seated').length;
+    this._tableObjs.forEach((t, i) => {
+      if (!t.visible) { t.full.setVisible(false); return; }
+      t.full.setVisible(i < tables && seated >= tables);
+    });
+  }
+
+  // ── Workers ────────────────────────────────────────────────────────────────
   _syncWorkers(workers) {
     const activeIds = new Set(workers.map(w => w.id));
 
-    // Remove departed workers
-    Object.keys(this.workerSprites).forEach(id => {
-      if (!activeIds.has(parseInt(id))) {
-        const ws = this.workerSprites[id];
+    // Remove gone workers
+    Object.keys(this._workers).forEach(id => {
+      if (!activeIds.has(+id)) {
+        const ws = this._workers[id];
         this.tweens.add({
-          targets: ws.sprite, alpha: 0, duration: 300,
-          onComplete: () => ws.sprite.destroy(),
+          targets: [ws.sprite, ws.label],
+          alpha: 0, duration: 400,
+          onComplete: () => {
+            ws.sprite.destroy();
+            ws.label.destroy();
+            ws.moraleGfx.destroy();
+          },
         });
-        delete this.workerSprites[id];
+        delete this._workers[id];
       }
     });
 
     workers.forEach(w => {
-      if (!this.workerSprites[w.id]) {
-        this.workerSprites[w.id] = this._createWorkerSprite(w);
+      if (!this._workers[w.id]) {
+        this._spawnWorker(w);
       } else {
-        this._updateWorkerSprite(this.workerSprites[w.id], w);
+        this._moveWorker(this._workers[w.id], w);
       }
     });
   }
 
-  _createWorkerSprite(w) {
-    const startPos = this._workerHomePosition(w);
-    const key = `worker_${w.role}`;
-    const sprite = this.add.sprite(startPos.x, startPos.y, key)
-      .setDepth(15).setScale(1.4).setAlpha(0).setInteractive();
+  _spawnWorker(w) {
+    const home = this._workerHome(w);
+    const key  = `worker_${w.role}`;
+    const spr  = this.add.sprite(home.x, home.y + 20, key)
+      .setDepth(15).setScale(1.5).setAlpha(0);
+    spr.play(`${key}_idle`);
 
-    this.tweens.add({ targets: sprite, alpha: 1, duration: 400 });
-    sprite.play(`${key}_idle`);
+    this.tweens.add({ targets: spr, alpha: 1, y: home.y, duration: 400, ease: 'Back.easeOut' });
 
-    // Name label
-    const label = this.add.text(startPos.x, startPos.y - 22, w.name.split(' ')[0], {
+    const label = this.add.text(home.x, home.y - 18, w.name.split(' ')[0], {
       fontSize: '8px', fontFamily: 'Segoe UI', color: '#f5e6c8',
-      backgroundColor: '#1a0f0688', padding: { x: 2, y: 1 },
-    }).setOrigin(0.5, 1).setDepth(16);
+      backgroundColor: '#1a0f0699', padding: { x: 2, y: 1 },
+    }).setOrigin(0.5, 1).setDepth(16).setAlpha(0);
+    this.tweens.add({ targets: label, alpha: 1, duration: 400, delay: 200 });
 
-    // Morale indicator
-    const moraleBar = this.add.graphics().setDepth(16);
+    const moraleGfx = this.add.graphics().setDepth(16);
 
-    return { sprite, label, moraleBar, data: w, targetX: startPos.x, targetY: startPos.y };
+    this._workers[w.id] = { sprite: spr, label, moraleGfx, data: w };
   }
 
-  _updateWorkerSprite(ws, w) {
+  _moveWorker(ws, w) {
     ws.data = w;
-    const home = this._workerHomePosition(w);
-
-    // Animate to home if not already there
+    const home = this._workerHome(w);
     const dist = Phaser.Math.Distance.Between(ws.sprite.x, ws.sprite.y, home.x, home.y);
-    if (dist > 8) {
-      const key = `worker_${w.role}`;
+    const key  = `worker_${w.role}`;
+
+    if (dist > 10) {
       ws.sprite.play(`${key}_walk`);
       ws.sprite.setFlipX(home.x < ws.sprite.x);
+      this.tweens.killTweensOf(ws.sprite);
       this.tweens.add({
         targets: ws.sprite, x: home.x, y: home.y,
-        duration: Math.min(dist * 5, 1200), ease: 'Linear',
+        duration: Math.min(dist * 6, 1400), ease: 'Linear',
         onComplete: () => {
-          ws.sprite.play(`${key}_idle`);
-          ws.label.setPosition(home.x, home.y - 22);
+          if (ws.sprite.active) {
+            ws.sprite.play(`${key}_idle`);
+            ws.sprite.setFlipX(false);
+          }
         },
       });
-    } else {
-      ws.label.setPosition(ws.sprite.x, ws.sprite.y - 22);
     }
 
-    // Morale bar
-    ws.moraleBar.clear();
-    const morale = w.morale ?? 70;
-    const barX = ws.sprite.x - 10, barY = ws.sprite.y + 14;
-    ws.moraleBar.fillStyle(0x333333); ws.moraleBar.fillRect(barX, barY, 20, 3);
-    const col = morale >= 70 ? 0x2ecc71 : morale >= 40 ? 0xf5a623 : 0xe94560;
-    ws.moraleBar.fillStyle(col); ws.moraleBar.fillRect(barX, barY, morale * 0.2, 3);
+    // Reposition label
+    ws.label.setPosition(ws.sprite.x, ws.sprite.y - 18);
   }
 
-  _workerHomePosition(w) {
-    const L = CafeScene.LAYOUT;
+  _workerHome(w) {
+    const L = CafeScene.L;
     switch (w.role) {
-      case 'cashier': return { x: L.CASHIER_X, y: L.CASHIER_Y + 44 };
-      case 'waiter':  return { x: 320, y: 300 };
-      case 'manager': return { x: 80, y: 350 };
-      case 'barista': return { x: L.BREW_X + 36, y: L.BREW_Y + 54 };
+      case 'cashier': return { x: L.CASHIER_X,      y: L.CASHIER_Y + 50 };
+      case 'waiter':  return { x: 340,               y: 300 };
+      case 'manager': return { x: 72,                y: 350 };
+      case 'barista': return { x: L.BREW.x + 36,     y: L.BREW.y + 60 };
       case 'baker': {
-        const idx = Object.values(this.workerSprites)
+        // Distribute bakers across oven slots
+        const bakerIds = Object.values(this._workers)
           .filter(ws => ws.data.role === 'baker')
-          .findIndex(ws => ws.data.id === w.id);
-        const slot = L.OVEN_SLOTS[Math.max(0, idx)] || L.OVEN_SLOTS[0];
-        return { x: slot.x + 32, y: slot.y + 90 };
+          .map(ws => ws.data.id)
+          .sort((a, b) => a - b);
+        const idx = bakerIds.indexOf(w.id);
+        const slot = L.OVENS[Math.max(0, Math.min(idx, L.OVENS.length - 1))];
+        return { x: slot.x + 32, y: slot.y + 95 };
       }
-      default: return { x: 200, y: 350 };
+      default: return { x: 200, y: 360 };
     }
   }
 
-  // ── Customer sync ─────────────────────────────────────────────────────────
+  // ── Customers — server-backed only ────────────────────────────────────────
   _syncCustomers(orders) {
     const activeIds = new Set(orders.map(o => o.id));
 
-    // Remove served/expired customers
-    Object.keys(this.customerSprites).forEach(id => {
-      if (!activeIds.has(parseInt(id))) {
-        const cs = this.customerSprites[id];
-        this._animateCustomerLeave(cs);
-        delete this.customerSprites[id];
+    // Remove served/expired
+    Object.keys(this._customers).forEach(id => {
+      if (!activeIds.has(+id)) {
+        this._leaveCustomer(this._customers[id]);
+        delete this._customers[id];
       }
     });
 
-    // Add/update customers
+    // Add/update
     orders.forEach((order, qIdx) => {
-      if (!this.customerSprites[order.id]) {
-        this.customerSprites[order.id] = this._createCustomerSprite(order, qIdx);
+      if (!this._customers[order.id]) {
+        this._spawnCustomer(order, qIdx);
       } else {
-        this._updateCustomerSprite(this.customerSprites[order.id], order, qIdx);
+        this._updateCustomer(this._customers[order.id], order, qIdx);
       }
     });
   }
 
-  _createCustomerSprite(order, qIdx) {
-    const L = CafeScene.LAYOUT;
-    const colorIdx = order.id % 8;
-    const key = `customer_${colorIdx}`;
+  _spawnCustomer(order, qIdx) {
+    const L   = CafeScene.L;
+    const idx = order.id % 8;
+    const key = `customer_${idx}`;
+    const dst = this._queuePos(qIdx);
 
-    // Enter from left edge
-    const sprite = this.add.sprite(-20, L.QUEUE_START_Y, key)
-      .setDepth(15).setScale(1.3).setAlpha(0);
-    sprite.play(`${key}_walk`);
+    // Enter from the left door
+    const spr = this.add.sprite(-24, dst.y, key).setDepth(15).setScale(1.4).setAlpha(0);
+    spr.play(`${key}_walk`);
 
-    const target = this._queuePosition(qIdx, L);
-
-    this.tweens.add({ targets: sprite, alpha: 1, duration: 300 });
+    this.tweens.add({ targets: spr, alpha: 1, duration: 250 });
     this.tweens.add({
-      targets: sprite, x: target.x, y: target.y,
-      duration: 800, ease: 'Power2',
-      onComplete: () => sprite.play(`${key}_idle`),
+      targets: spr, x: dst.x, y: dst.y,
+      duration: 700, ease: 'Power2',
+      onComplete: () => { if (spr.active) spr.play(`${key}_idle`); },
     });
 
-    // Order bubble
-    const bubble = this.add.image(target.x, target.y - 42, 'order_bubble')
+    // Speech bubble
+    const bubble = this.add.image(dst.x, dst.y - 44, 'order_bubble')
       .setDepth(20).setScale(0).setAlpha(0);
-    this.tweens.add({ targets: bubble, scaleX: 1, scaleY: 1, alpha: 1, duration: 300, delay: 900 });
+    this.tweens.add({ targets: bubble, scaleX: 1, scaleY: 1, alpha: 1, duration: 280, delay: 750 });
 
-    // Item icon inside bubble
+    // Order icon inside bubble
     const iconKey = order.recipe_name ? 'cake_icon' : 'drink_icon';
-    const iconImg = this.add.image(target.x, target.y - 46, iconKey)
+    const icon = this.add.image(dst.x, dst.y - 48, iconKey)
       .setDepth(21).setScale(0).setAlpha(0);
-    this.tweens.add({ targets: iconImg, scaleX: 1, scaleY: 1, alpha: 1, duration: 300, delay: 900 });
+    this.tweens.add({ targets: icon, scaleX: 1, scaleY: 1, alpha: 1, duration: 280, delay: 780 });
 
-    // Impatience clock (shown when <60s remain)
-    const impatience = this.add.image(target.x + 18, target.y - 50, 'impatience')
-      .setDepth(22).setVisible(false).setScale(0.7);
+    // Impatience clock
+    const imp = this.add.image(dst.x + 18, dst.y - 52, 'impatience')
+      .setDepth(22).setVisible(false).setScale(0.75);
 
-    return { sprite, bubble, iconImg, impatience, data: order, qIdx, colorIdx, key };
+    this._customers[order.id] = { spr, bubble, icon, imp, key, qIdx, data: order };
   }
 
-  _updateCustomerSprite(cs, order, qIdx) {
+  _updateCustomer(cs, order, qIdx) {
     cs.data = order;
-    const L = CafeScene.LAYOUT;
-    const target = this._queuePosition(qIdx, L);
+    const dst = this._queuePos(qIdx);
 
-    // Move if queue position changed
+    // Shuffle in queue
     if (cs.qIdx !== qIdx) {
       cs.qIdx = qIdx;
-      cs.sprite.play(`${cs.key}_walk`);
-      cs.sprite.setFlipX(target.x < cs.sprite.x);
+      cs.spr.play(`${cs.key}_walk`);
+      cs.spr.setFlipX(dst.x < cs.spr.x);
+      this.tweens.killTweensOf(cs.spr);
       this.tweens.add({
-        targets: [cs.sprite, cs.bubble, cs.iconImg, cs.impatience],
-        x: target.x, y: { value: target.y, offset: -42 },
-        duration: 500, ease: 'Power2',
-        onComplete: () => cs.sprite.play(`${cs.key}_idle`),
+        targets: cs.spr, x: dst.x, y: dst.y, duration: 450, ease: 'Power2',
+        onComplete: () => { if (cs.spr.active) { cs.spr.play(`${cs.key}_idle`); cs.spr.setFlipX(false); } },
       });
-      this.tweens.add({ targets: cs.bubble, x: target.x, y: target.y - 42, duration: 500 });
-      this.tweens.add({ targets: cs.iconImg, x: target.x, y: target.y - 46, duration: 500 });
-      this.tweens.add({ targets: cs.impatience, x: target.x + 18, y: target.y - 50, duration: 500 });
+      // Move bubble + icon with customer
+      [cs.bubble, cs.icon].forEach(obj => {
+        this.tweens.killTweensOf(obj);
+        this.tweens.add({ targets: obj, x: dst.x, duration: 450, ease: 'Power2' });
+      });
+      this.tweens.add({ targets: cs.imp, x: dst.x + 18, duration: 450, ease: 'Power2' });
+      cs.bubble.y = dst.y - 44; cs.icon.y = dst.y - 48; cs.imp.y = dst.y - 52;
     }
 
     // Impatience indicator
-    const secs = order.seconds_remaining ?? order.patience ?? 999;
-    cs.impatience.setVisible(secs < 60);
-    if (secs < 30) {
-      cs.impatience.setTint(0xe94560);
-    } else if (secs < 60) {
-      cs.impatience.setTint(0xf5a623);
+    const secs = order.seconds_remaining ?? 999;
+    cs.imp.setVisible(secs < 60);
+    cs.imp.setTint(secs < 25 ? 0xe94560 : 0xf5a623);
+  }
+
+  _leaveCustomer(cs) {
+    // Walk out to the right (or left if near door)
+    const exitX = cs.spr.x < 200 ? -30 : 820;
+    cs.spr.play(`${cs.key}_walk`);
+    cs.spr.setFlipX(exitX < cs.spr.x);
+    const targets = [cs.spr, cs.bubble, cs.icon, cs.imp];
+    this.tweens.add({
+      targets, x: exitX, alpha: 0, duration: 550, ease: 'Power2',
+      onComplete: () => targets.forEach(t => t.destroy()),
+    });
+  }
+
+  _queuePos(idx) {
+    const L = CafeScene.L;
+    if (idx === 0) return { x: L.CASHIER_X, y: L.CASHIER_Y + 82 };
+    return { x: L.QUEUE_X, y: L.QUEUE_START_Y + idx * L.QUEUE_STEP };
+  }
+
+  // ── Steam ──────────────────────────────────────────────────────────────────
+  _syncSteam(ovens) {
+    const L = CafeScene.L;
+    this._steamEmitter.stop();
+    const baking = ovens.find((ov, i) => ov.is_busy && i < L.OVENS.length);
+    if (baking) {
+      const idx  = ovens.findIndex(o => o.is_busy);
+      const slot = L.OVENS[Math.min(idx, L.OVENS.length - 1)];
+      this._steamEmitter.setPosition(slot.x + 32, slot.y - 6);
+      this._steamEmitter.start();
     }
   }
 
-  _queuePosition(idx, L) {
-    // First customer at cashier, rest queue behind
-    if (idx === 0) return { x: L.CASHIER_X, y: L.CASHIER_Y + 80 };
-    return { x: L.QUEUE_X, y: L.QUEUE_START_Y + idx * L.QUEUE_SPACING };
-  }
-
-  _animateCustomerLeave(cs) {
-    const direction = Math.random() > 0.5 ? 800 : -20;
-    this.tweens.add({
-      targets: [cs.sprite, cs.bubble, cs.iconImg, cs.impatience],
-      x: direction, alpha: 0, duration: 600, ease: 'Power2',
-      onComplete: () => {
-        cs.sprite.destroy();
-        cs.bubble.destroy();
-        cs.iconImg.destroy();
-        cs.impatience.destroy();
-      },
-    });
-  }
-
-  // ── Table sync ────────────────────────────────────────────────────────────
-  _syncTables(state) {
-    // Count tables from upgrades (base 2, each table upgrade +2)
-    const upgrades = state.owned_upgrades || [];
-    const tableCount = 2 + (upgrades.filter(u => u === 'second_counter' || u === 'loyalty_board').length * 2);
-    const visibleCount = Math.min(tableCount, this.tableObjects.length);
-
-    this.tableObjects.forEach((tbl, i) => {
-      const shouldBeVisible = i < visibleCount;
-      if (shouldBeVisible && !tbl.visible) {
-        tbl.visible = true;
-        tbl.sprite.setVisible(true);
-        tbl.chairN.setVisible(true);
-        tbl.chairS.setVisible(true);
-        this.tweens.add({
-          targets: [tbl.sprite, tbl.chairN, tbl.chairS],
-          alpha: 1, duration: 600, ease: 'Back.easeOut',
-        });
-      }
-    });
-  }
-
-  // ── Steam emitters ────────────────────────────────────────────────────────
-  _syncSteam(ovens) {
-    const L = CafeScene.LAYOUT;
-    this.steamParticles.stop();
-    ovens.forEach((ov, i) => {
-      if (ov.is_busy && i < L.OVEN_SLOTS.length) {
-        const slot = L.OVEN_SLOTS[i];
-        this.steamParticles.setPosition(slot.x + 32, slot.y - 4);
-        this.steamParticles.start();
-      }
-    });
-  }
-
-  // ── Table-full icons ──────────────────────────────────────────────────────
-  _updateTableFullIcons(orders) {
-    const occupiedSlots = new Set();
-    orders.forEach((_, i) => { if (i >= 0 && i < this.tableFullIcons.length) occupiedSlots.add(i); });
-    this.tableFullIcons.forEach((icon, i) => {
-      const tbl = this.tableObjects[i];
-      const full = tbl && tbl.visible && !occupiedSlots.has(i) && orders.length >= 3;
-      icon.setVisible(false); // simplified: hide for now
-    });
-  }
-
-  // ── Brew station reveal ───────────────────────────────────────────────────
+  // ── Brew station reveal ────────────────────────────────────────────────────
   _revealBrewStation() {
-    this.brewStationSprite.setVisible(true);
-    this.tweens.add({ targets: this.brewStationSprite, alpha: 1, y: '-=10', duration: 700, ease: 'Back.easeOut' });
-    this._spawnUpgradeSparkles(this.brewStationSprite.x, this.brewStationSprite.y);
+    this._brewSpr.setVisible(true);
+    this.tweens.add({
+      targets: this._brewSpr, alpha: 1, y: '-=10',
+      duration: 700, ease: 'Back.easeOut',
+    });
+    this._spawnSparkles(this._brewSpr.x, this._brewSpr.y + 30);
     this.game.events.emit('show-brew-tab');
   }
 
-  // ── Upgrade cinematic ─────────────────────────────────────────────────────
-  _onUpgradeBought(data) {
-    const target = this._getUpgradeTarget(data.upgrade_id);
-    if (!target) return;
-    this._playCinematic(target.x, target.y, data.name);
+  // ── Upgrade cinematic ──────────────────────────────────────────────────────
+  _onUpgrade(data) {
+    const pos = this._upgradePos(data.upgrade_id);
+    if (!pos) return;
+    this._playCinematic(pos.x, pos.y, data.name || data.upgrade_id);
   }
 
   _onOvenBought(data) {
-    const idx = this.ovenObjects.findIndex(o => o.serverId === null);
+    const idx = this._ovenObjs.findIndex(o => o.serverId == null);
     if (idx < 0) return;
-    const slot = CafeScene.LAYOUT.OVEN_SLOTS[idx];
-    this.ovenObjects[idx].serverId = data.id;
-    this.ovenObjects[idx].tier = data.tier;
-    const textureKey = data.tier === 'industrial' ? 'oven_ind_idle' : data.tier === 'pro' ? 'oven_pro_idle' : 'oven_idle';
-    this.ovenObjects[idx].sprite.setTexture(textureKey).setVisible(true);
-    this.tweens.add({ targets: this.ovenObjects[idx].sprite, alpha: 1, y: '-=8', duration: 600, ease: 'Back.easeOut' });
-    this._playCinematic(slot.x + 32, slot.y + 40, data.name || 'New Oven!');
+    const obj = this._ovenObjs[idx];
+    const texKey = data.tier === 'industrial' ? 'oven_ind_idle'
+                 : data.tier === 'pro'        ? 'oven_pro_idle' : 'oven_idle';
+    obj.serverId = data.id; obj.tier = data.tier;
+    obj.spr.setTexture(texKey).setVisible(true);
+    this.tweens.add({ targets: obj.spr, alpha: 1, y: '-=8', duration: 600, ease: 'Back.easeOut',
+      onComplete: () => { obj.spr.y += 8; } });
+    this._playCinematic(obj.slot.x + 32, obj.slot.y + 40, data.name || 'New Oven!');
   }
 
-  _getUpgradeTarget(uid) {
-    const L = CafeScene.LAYOUT;
-    const map = {
-      'display_case':        { x: 160, y: 290 },
-      'commercial_fridge':   { x: 160, y: 340 },
-      'second_counter':      { x: L.CASHIER_X, y: L.CASHIER_Y },
-      'premium_ingredients': { x: 630, y: 160 },
-      'industrial_mixer':    { x: 630, y: 200 },
-      'recipe_book':         { x: 630, y: 240 },
-      'loyalty_board':       { x: 380, y: 220 },
-      'music_system':        { x: 200, y: 140 },
-      'brew_station':        { x: L.BREW_X + 36, y: L.BREW_Y + 30 },
-    };
-    return map[uid] || null;
+  _upgradePos(uid) {
+    const L = CafeScene.L;
+    return ({
+      display_case:        { x: L.CASHIER_X, y: L.CASHIER_Y + 70 },
+      commercial_fridge:   { x: L.CASHIER_X, y: L.CASHIER_Y + 110 },
+      second_counter:      { x: L.CASHIER_X, y: L.CASHIER_Y },
+      premium_ingredients: { x: 600, y: 160 },
+      industrial_mixer:    { x: 600, y: 200 },
+      recipe_book:         { x: 600, y: 240 },
+      loyalty_board:       { x: 340, y: 220 },
+      music_system:        { x: 200, y: 140 },
+      brew_station:        { x: L.BREW.x + 36, y: L.BREW.y + 30 },
+      extra_table:         { x: 280, y: 330 },
+      cashier_stand_2:     { x: L.CASHIER_X + 90, y: L.CASHIER_Y },
+    })[uid] || null;
   }
 
   _playCinematic(x, y, label) {
-    this.upgradeInProgress = true;
+    this._upgradeRunning = true;
 
-    // Darken overlay
-    const overlay = this.add.graphics().setDepth(50);
-    overlay.fillStyle(0x000000, 0); overlay.fillRect(0, 0, this.scale.width, this.scale.height);
-    this.tweens.add({ targets: overlay, fillAlpha: 0.6, duration: 400 });
+    // Dark overlay
+    const ov = this.add.graphics().setDepth(50);
+    ov.fillStyle(0x000000, 0); ov.fillRect(0, 0, CafeScene.L.W, CafeScene.L.H);
+    this.tweens.add({ targets: ov, fillAlpha: 0.65, duration: 350 });
 
-    // Zoom camera to target
-    this.cameras.main.zoomTo(2.2, 600, 'Power2');
-    this.cameras.main.pan(x, y, 600, 'Power2');
+    // Zoom + pan
+    this.cameras.main.zoomTo(2.4, 550, 'Power2');
+    this.cameras.main.pan(x, y, 550, 'Power2');
 
-    // Sparkles burst
-    this._spawnUpgradeSparkles(x, y);
+    // Sparkles
+    this._spawnSparkles(x, y);
 
-    // Label
-    const txt = this.add.text(x, y - 40, `✨ ${label}`, {
-      fontSize: '14px', fontFamily: 'Segoe UI', color: '#f0c040', fontStyle: 'bold',
+    // Label pop
+    const txt = this.add.text(x, y - 44, `✨ ${label}`, {
+      fontSize: '13px', fontFamily: 'Segoe UI', color: '#f0c040', fontStyle: 'bold',
       backgroundColor: '#1a0f06cc', padding: { x: 8, y: 4 },
-    }).setOrigin(0.5, 1).setDepth(55).setAlpha(0).setScale(0.5);
-    this.tweens.add({ targets: txt, alpha: 1, scaleX: 1, scaleY: 1, duration: 400, delay: 300 });
+    }).setOrigin(0.5, 1).setDepth(56).setAlpha(0).setScale(0.4);
+    this.tweens.add({ targets: txt, alpha: 1, scaleX: 1, scaleY: 1, duration: 380, delay: 320, ease: 'Back.easeOut' });
 
-    // Hold, then zoom back
-    this.time.delayedCall(1800, () => {
+    // Coin rain
+    this._spawnCoins(x, y);
+
+    // Zoom back after 2 s
+    this.time.delayedCall(2000, () => {
       this.cameras.main.zoomTo(1, 500, 'Power2');
-      this.cameras.main.pan(this.scale.width / 2, this.scale.height / 2, 500, 'Power2');
-      this.tweens.add({ targets: [overlay, txt], alpha: 0, duration: 400, delay: 200,
-        onComplete: () => { overlay.destroy(); txt.destroy(); this.upgradeInProgress = false; }
+      this.cameras.main.pan(CafeScene.L.W / 2, CafeScene.L.H / 2, 500, 'Power2');
+      this.tweens.add({
+        targets: [ov, txt], alpha: 0, duration: 380, delay: 180,
+        onComplete: () => {
+          ov.destroy(); txt.destroy();
+          this._upgradeRunning = false;
+        },
       });
     });
   }
 
-  _spawnUpgradeSparkles(x, y) {
-    for (let i = 0; i < 12; i++) {
-      const angle = (i / 12) * Math.PI * 2;
-      const dist  = Phaser.Math.Between(20, 60);
-      const sx = x + Math.cos(angle) * dist;
-      const sy = y + Math.sin(angle) * dist;
-      const sp = this.add.image(x, y, 'sparkle').setDepth(56).setScale(0.3).setAlpha(0);
+  _spawnSparkles(x, y) {
+    for (let i = 0; i < 14; i++) {
+      const angle = (i / 14) * Math.PI * 2;
+      const dist  = Phaser.Math.Between(22, 70);
+      const tx = x + Math.cos(angle) * dist;
+      const ty = y + Math.sin(angle) * dist;
+      const sp = this.add.image(x, y, 'sparkle').setDepth(57).setScale(0.2).setAlpha(0);
       this.tweens.add({
-        targets: sp, x: sx, y: sy, scaleX: 1.2, scaleY: 1.2, alpha: 1,
-        duration: 300, delay: i * 40, ease: 'Power2',
+        targets: sp, x: tx, y: ty, scaleX: 1.4, scaleY: 1.4, alpha: 1,
+        duration: 320, delay: i * 35, ease: 'Power2',
         onComplete: () => {
           this.tweens.add({
-            targets: sp, alpha: 0, scaleX: 0, scaleY: 0, duration: 400,
+            targets: sp, alpha: 0, scaleX: 0.1, scaleY: 0.1, duration: 380,
             onComplete: () => sp.destroy(),
           });
         },
       });
     }
+  }
 
-    // Coin rain
-    for (let i = 0; i < 6; i++) {
-      const coin = this.add.image(x + Phaser.Math.Between(-30, 30), y, 'coin')
-        .setDepth(56).setAlpha(0).setScale(0.8);
+  _spawnCoins(x, y) {
+    for (let i = 0; i < 8; i++) {
+      const coin = this.add.image(x + Phaser.Math.Between(-40, 40), y, 'coin')
+        .setDepth(57).setAlpha(0).setScale(0.9);
       this.tweens.add({
-        targets: coin, y: y - Phaser.Math.Between(40, 80), alpha: 1,
-        duration: 200, delay: i * 80,
+        targets: coin,
+        y: y - Phaser.Math.Between(50, 100),
+        alpha: 1, duration: 220, delay: i * 70,
         onComplete: () => {
           this.tweens.add({
-            targets: coin, y: coin.y + 30, alpha: 0, duration: 400,
+            targets: coin, y: coin.y + 40, alpha: 0, duration: 380,
             onComplete: () => coin.destroy(),
           });
         },
@@ -700,30 +661,33 @@ class CafeScene extends Phaser.Scene {
     }
   }
 
-  // ── Periodic animation tick ────────────────────────────────────────────────
-  _tickAnimations() {
-    // Workers idle bob
-    Object.values(this.workerSprites).forEach(ws => {
-      if (ws.sprite.active) {
-        this.tweens.add({
-          targets: ws.sprite, y: ws.sprite.y - 2, duration: 250,
-          yoyo: true, ease: 'Sine.easeInOut',
-        });
-      }
+  // ── Idle bob ──────────────────────────────────────────────────────────────
+  _idleBob() {
+    Object.values(this._workers).forEach(ws => {
+      if (!ws.sprite.active || ws.sprite.anims?.currentAnim?.key?.endsWith('_walk')) return;
+      const baseY = ws.sprite.y;
+      this.tweens.add({
+        targets: ws.sprite, y: baseY - 2, duration: 280, ease: 'Sine.easeInOut',
+        yoyo: true, onComplete: () => { if (ws.sprite.active) ws.sprite.y = baseY; },
+      });
     });
   }
 
-  // ── Update (per frame) ─────────────────────────────────────────────────────
-  update(time, delta) {
-    // Update worker morale bars to follow sprites
-    Object.values(this.workerSprites).forEach(ws => {
-      if (!ws.moraleBar || !ws.sprite.active) return;
+  // ── Update loop ───────────────────────────────────────────────────────────
+  update() {
+    // Sync morale bars and labels to sprite positions each frame
+    Object.values(this._workers).forEach(ws => {
+      if (!ws.sprite.active) return;
+      const x = ws.sprite.x, y = ws.sprite.y;
+
+      ws.label.setPosition(x, y - 20);
+
       const morale = ws.data?.morale ?? 70;
-      const bx = ws.sprite.x - 10, by = ws.sprite.y + 16;
-      ws.moraleBar.clear();
-      ws.moraleBar.fillStyle(0x333333); ws.moraleBar.fillRect(bx, by, 20, 3);
+      const gfx = ws.moraleGfx;
+      gfx.clear();
+      gfx.fillStyle(0x222222, 0.8); gfx.fillRect(x - 11, y + 16, 22, 4);
       const col = morale >= 70 ? 0x2ecc71 : morale >= 40 ? 0xf5a623 : 0xe94560;
-      ws.moraleBar.fillStyle(col); ws.moraleBar.fillRect(bx, by, morale * 0.2, 3);
+      gfx.fillStyle(col); gfx.fillRect(x - 11, y + 16, morale * 0.22, 4);
     });
   }
 }
